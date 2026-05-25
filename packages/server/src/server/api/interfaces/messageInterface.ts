@@ -402,7 +402,19 @@ export class MessageInterface {
     }
 
     private static async mergePollResponses(chatGuid: string, messageGuid: string, poll: PollData): Promise<PollData> {
-        const responses = await MessageInterface.readPollResponsesForMessage(chatGuid, messageGuid);
+        const responsesByHandle = new Map<string | null, string[]>();
+        for (const response of poll.responses ?? []) {
+            responsesByHandle.set(response.handle, [...new Set(response.optionIdentifiers ?? [])]);
+        }
+
+        for (const response of await MessageInterface.readPollResponsesForMessage(chatGuid, messageGuid)) {
+            responsesByHandle.set(response.handle, [...new Set(response.optionIdentifiers ?? [])]);
+        }
+
+        const responses = Array.from(responsesByHandle.entries()).map(([handle, optionIdentifiers]) => ({
+            handle,
+            optionIdentifiers
+        }));
         return {
             ...poll,
             responses
