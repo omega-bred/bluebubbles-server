@@ -31,4 +31,11 @@ export class PrivateApiHandle extends PrivateApiAction {
         const aliasType = address.includes("@") ? "email" : "phone";
         return this.sendApiMessage(action, { aliasType, address }, request);
     }
+
+    async resolveAliases(addresses: string[]): Promise<TransactionResult> {
+        const action = "resolve-handle-aliases";
+        this.throwForNoMissingFields(action, [addresses]);
+        const request = new TransactionPromise(TransactionType.HANDLE);
+        return this.sendApiMessage(action, { addresses }, request);
+    }
 }

@@ -57,6 +57,11 @@ export class FindMyFriendsCache {
         const noLocationType = currentData?.status === "legacy" && locationData?.status === "legacy";
         const updateTimestamp = locationData?.last_updated ?? 0;
         const currentTimestamp = currentData?.last_updated ?? 0;
+        const handleResolutionChanged =
+            currentData?.preferred_messages_handle !== locationData?.preferred_messages_handle ||
+            currentData?.preferred_messages_chat_guid !== locationData?.preferred_messages_chat_guid ||
+            currentData?.handle_resolution_confidence !== locationData?.handle_resolution_confidence ||
+            JSON.stringify(currentData?.resolved_handles ?? []) !== JSON.stringify(locationData?.resolved_handles ?? []);
         if (
             (
                 noLocationType &&
@@ -66,6 +71,7 @@ export class FindMyFriendsCache {
                 updatedCoords[1] === 0
             ) ||
             (
+                !handleResolutionChanged &&
                 currentData?.status === locationData?.status &&
                 currentCoords[0] === updatedCoords[0] &&
                 currentCoords[1] === updatedCoords[1] &&
