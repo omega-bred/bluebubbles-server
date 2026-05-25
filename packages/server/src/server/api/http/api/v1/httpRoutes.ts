@@ -559,6 +559,12 @@ export class HttpRoutes {
                     },
                     {
                         method: HttpMethod.POST,
+                        path: "resolve",
+                        middleware: [...HttpRoutes.protected, PrivateApiMiddleware],
+                        controller: HandleRouter.resolveAliases
+                    },
+                    {
+                        method: HttpMethod.POST,
                         path: "query",
                         validators: [HandleValidator.validateQuery],
                         controller: HandleRouter.query

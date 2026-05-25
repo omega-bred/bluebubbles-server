@@ -131,6 +131,20 @@ interface FindMyLocation {
     locationFinished?: boolean;
 }
 
+export type FindMyResolvedHandle = {
+    address: string;
+    normalized_address: string | null;
+    display_address: string | null;
+    service: string | null;
+    contact_id: string | null;
+    person_centric_id: string | null;
+    cn_contact_id: string | null;
+    kind: "email" | "phone" | string | null;
+    sources: string[];
+};
+
+export type FindMyHandleResolutionConfidence = "none" | "exact" | "imcore" | "messages_chat";
+
 export type FindMyLocationItem = {
     handle: string | null;
     coordinates: [number, number];
@@ -141,6 +155,10 @@ export type FindMyLocationItem = {
     last_updated: number;
     is_locating_in_progress: 0 | 1;
     status: "legacy" | "live" | "shallow";
+    resolved_handles?: FindMyResolvedHandle[];
+    preferred_messages_handle?: string | null;
+    preferred_messages_chat_guid?: string | null;
+    handle_resolution_confidence?: FindMyHandleResolutionConfidence;
 };
 
 export type FindMySafeLocation = {

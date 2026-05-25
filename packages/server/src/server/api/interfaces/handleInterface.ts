@@ -96,4 +96,17 @@ export class HandleInterface {
 
         return !!availability?.data.available;
     }
+
+    static async resolveAliases(addresses: string[]): Promise<any[]> {
+        checkPrivateApiStatus();
+        const cleanAddresses = addresses
+            .filter(address => typeof address === "string")
+            .map(address => address.trim())
+            .filter(address => address.length > 0);
+
+        if (isEmpty(cleanAddresses)) return [];
+
+        const result = await Server().privateApi.handle.resolveAliases(cleanAddresses);
+        return result?.data?.resolutions ?? [];
+    }
 }

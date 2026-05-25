@@ -6,6 +6,7 @@ import { NEW_FINDMY_LOCATION } from "@server/events";
 import { isEmpty, titleCase, waitMs } from "@server/helpers/utils";
 import { Loggable } from "@server/lib/logging/Loggable";
 import { obfuscatedHandle } from "@server/utils/StringUtils";
+import { FindMyInterface } from "@server/api/interfaces/findMyInterface";
 
 export class PrivateApiFindMyEventHandler extends Loggable implements PrivateApiEventHandler {
     tag = "PrivateApiFindMyEventHandler";
@@ -25,8 +26,10 @@ export class PrivateApiFindMyEventHandler extends Loggable implements PrivateApi
     async handleNewLocation(data: FindMyLocationItem[]) {
         if (isEmpty(data)) return;
 
+        const enrichedData = await FindMyInterface.enrichFriendHandles(data);
+
         // Store the data in the cache
-        const added = Server().findMyCache?.addAll(data);
+        const added = Server().findMyCache?.addAll(enrichedData);
 
         // If there were items updated in the cache, emit them
         let count = 0;

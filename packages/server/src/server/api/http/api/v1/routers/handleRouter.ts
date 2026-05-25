@@ -6,7 +6,7 @@ import { HandleInterface } from "@server/api/interfaces/handleInterface";
 import { getiMessageAddressFormat, isEmpty } from "@server/helpers/utils";
 import { arrayHasOne } from "@server/utils/CollectionUtils";
 import { Success } from "../responses/success";
-import { NotFound } from "../responses/errors";
+import { BadRequest, NotFound } from "../responses/errors";
 import { parseWithQuery } from "../utils";
 import { HandleSerializer } from "@server/api/serializers/HandleSerializer";
 
@@ -80,5 +80,19 @@ export class HandleRouter {
         // Get the availability from the private api
         const available = await HandleInterface.getFacetimeAvailability(address);
         return new Success(ctx, { data: { available } }).send();
+    }
+
+    static async resolveAliases(ctx: RouterContext, _: Next) {
+        const { body } = ctx.request;
+        const addresses = Array.isArray(body?.addresses)
+            ? body.addresses
+            : (typeof body?.address === "string" ? [body.address] : []);
+
+        if (isEmpty(addresses)) {
+            throw new BadRequest({ error: "Addresses must be provided as `address` or `addresses`." });
+        }
+
+        const data = await HandleInterface.resolveAliases(addresses);
+        return new Success(ctx, { data }).send();
     }
 }
