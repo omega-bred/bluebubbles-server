@@ -2,8 +2,13 @@ import type { Message } from "@server/databases/imessage/entity/Message";
 import type { ValidRemoveTapback, ValidTapback } from "@server/types";
 import * as net from "net";
 
+export type MessageProtocol = "iMessage" | "SMS" | "RCS";
+
 export type SendMessageParams = {
-    chatGuid: string;
+    chatGuid?: string;
+    addresses?: string[];
+    protocol?: MessageProtocol | string;
+    service?: MessageProtocol | string;
     message: string;
     method: "apple-script" | "private-api";
     attributedBody?: Record<string, any> | null;
@@ -17,7 +22,10 @@ export type SendMessageParams = {
 };
 
 export type SendMessagePrivateApiParams = {
-    chatGuid: string;
+    chatGuid?: string;
+    addresses?: string[];
+    protocol?: MessageProtocol | string;
+    service?: MessageProtocol | string;
     message: string;
     attributedBody?: Record<string, any> | null;
     textFormatting?: TextFormatting | null;
@@ -29,7 +37,10 @@ export type SendMessagePrivateApiParams = {
 };
 
 export type SendAttachmentPrivateApiParams = {
-    chatGuid: string;
+    chatGuid?: string;
+    addresses?: string[];
+    protocol?: MessageProtocol | string;
+    service?: MessageProtocol | string;
     filePath: string;
     isAudioMessage?: boolean;
     attributedBody?: Record<string, any> | null;
@@ -54,7 +65,10 @@ export type EditMessageParams = {
 };
 
 export type SendAttachmentParams = {
-    chatGuid: string;
+    chatGuid?: string;
+    addresses?: string[];
+    protocol?: MessageProtocol | string;
+    service?: MessageProtocol | string;
     method?: string;
     attachmentPath: string;
     attachmentName?: string;
@@ -76,7 +90,10 @@ export type SendReactionParams = {
 };
 
 export type SendMultipartTextParams = {
-    chatGuid: string;
+    chatGuid?: string;
+    addresses?: string[];
+    protocol?: MessageProtocol | string;
+    service?: MessageProtocol | string;
     isAudioMessage?: boolean;
     attributedBody?: Record<string, any> | null;
     subject?: string;

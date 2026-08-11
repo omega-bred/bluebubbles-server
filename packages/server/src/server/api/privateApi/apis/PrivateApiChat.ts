@@ -5,6 +5,7 @@ import {
     TransactionType
 } from "@server/managers/transactionManager/transactionPromise";
 import { PrivateApiAction } from ".";
+import type { MessageProtocol } from "@server/api/types";
 
 export class PrivateApiChat extends PrivateApiAction {
     tag = "PrivateApiChat";
@@ -19,7 +20,7 @@ export class PrivateApiChat extends PrivateApiAction {
     }: {
         addresses: string[];
         message: string;
-        service?: "iMessage" | "SMS";
+        service?: MessageProtocol;
         attributedBody?: Record<string, any> | null;
         effectId?: string;
         subject?: string;

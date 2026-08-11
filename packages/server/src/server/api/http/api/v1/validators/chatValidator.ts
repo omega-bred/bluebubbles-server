@@ -3,6 +3,7 @@ import { Next } from "koa";
 
 import { ValidateInput } from "./index";
 import { BadRequest } from "../responses/errors";
+import { MessageInterface } from "@server/api/interfaces/messageInterface";
 
 export class ChatValidator {
     static getMessagesRules = {
@@ -44,14 +45,20 @@ export class ChatValidator {
         addresses: "required|array",
         message: "string",
         method: "string|in:apple-script,private-api",
-        service: "string|in:iMessage,SMS",
+        service: "string",
+        protocol: "string",
         tempGuid: "string",
         effectId: "string",
         subject: "string",
     };
 
     static async validateCreate(ctx: RouterContext, next: Next) {
-        ValidateInput(ctx?.request?.body, ChatValidator.createRules);
+        const { service, protocol } = ValidateInput(ctx?.request?.body, ChatValidator.createRules);
+        try {
+            (ctx.request.body as any).service = MessageInterface.normalizeMessageProtocol(protocol, service) ?? "iMessage";
+        } catch (ex: any) {
+            throw new BadRequest({ error: ex?.message ?? "Invalid message protocol" });
+        }
         await next();
     }
 

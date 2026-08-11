@@ -5,7 +5,7 @@ import {
 } from "@server/managers/transactionManager/transactionPromise";
 import { PrivateApiAction } from ".";
 import type { ValidTapback, ValidRemoveTapback } from "@server/types";
-import type { SendPollOption, TextFormatting } from "@server/api/types";
+import type { MessageProtocol, SendPollOption, TextFormatting } from "@server/api/types";
 import { isMinCatalina, isMinMonterey } from "@server/env";
 
 export class PrivateApiMessage extends PrivateApiAction {
@@ -20,14 +20,18 @@ export class PrivateApiMessage extends PrivateApiAction {
         effectId: string = null,
         selectedMessageGuid: string = null,
         partIndex = 0,
-        ddScan = false
+        ddScan = false,
+        addresses: string[] = null,
+        service: MessageProtocol = null
     ): Promise<TransactionResult> {
         const action = "send-message";
-        this.throwForNoMissingFields(action, [chatGuid, message]);
+        this.throwForNoMissingFields(action, [chatGuid || addresses, message]);
         const request = new TransactionPromise(TransactionType.MESSAGE);
 
         const data: any = {
             chatGuid,
+            addresses,
+            service,
             subject,
             message,
             attributedBody,
@@ -52,14 +56,18 @@ export class PrivateApiMessage extends PrivateApiAction {
         effectId: string = null,
         selectedMessageGuid: string = null,
         partIndex = 0,
-        ddScan = false
+        ddScan = false,
+        addresses: string[] = null,
+        service: MessageProtocol = null
     ): Promise<TransactionResult> {
         const action = "send-multipart";
-        this.throwForNoMissingFields(action, [chatGuid, parts]);
+        this.throwForNoMissingFields(action, [chatGuid || addresses, parts]);
         const request = new TransactionPromise(TransactionType.MESSAGE);
 
         const data: any = {
             chatGuid,
+            addresses,
+            service,
             subject,
             parts,
             attributedBody,

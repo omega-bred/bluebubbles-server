@@ -69,7 +69,10 @@ export class MessageValidator {
     }
 
     static sendTextRules = {
-        chatGuid: "required|string",
+        chatGuid: "string",
+        addresses: "array",
+        service: "string",
+        protocol: "string",
         tempGuid: "string",
         message: "present|string",
         method: "string|in:apple-script,private-api",
@@ -82,19 +85,55 @@ export class MessageValidator {
     };
 
     static async validateText(ctx: RouterContext, next: Next) {
-        const { tempGuid, method, effectId, subject, selectedMessageGuid, message, ddScan, textFormatting } = ValidateInput(
+        const {
+            tempGuid,
+            method,
+            effectId,
+            subject,
+            selectedMessageGuid,
+            message,
+            ddScan,
+            textFormatting,
+            chatGuid,
+            addresses,
+            service,
+            protocol
+        } = ValidateInput(
             ctx.request.body,
             MessageValidator.sendTextRules
         );
         let saniMethod = method;
+        let messageProtocol = null;
+        try {
+            messageProtocol = MessageInterface.normalizeMessageProtocol(protocol, service);
+        } catch (ex: any) {
+            throw new BadRequest({ error: ex?.message ?? "Invalid message protocol" });
+        }
+
+        if (isEmpty(chatGuid) && isEmpty(addresses)) {
+            throw new BadRequest({ error: `A 'chatGuid' or 'addresses' array is required` });
+        }
 
         // Default the method to AppleScript
         saniMethod = saniMethod ?? "apple-script";
 
         // If we have an effectId, subject, reply, or attributedBody
         // let's imply we want to use the Private API
-        if (effectId || subject || selectedMessageGuid || ddScan || ctx.request.body.attributedBody || hasTextFormatting(textFormatting)) {
+        if (
+            effectId ||
+            subject ||
+            selectedMessageGuid ||
+            ddScan ||
+            ctx.request.body.attributedBody ||
+            hasTextFormatting(textFormatting) ||
+            !isEmpty(addresses) ||
+            messageProtocol
+        ) {
             saniMethod = "private-api";
+        }
+
+        if (messageProtocol && isEmpty(addresses)) {
+            throw new BadRequest({ error: `'protocol'/'service' requires an 'addresses' array; chatGuid already determines protocol` });
         }
 
         // If we are sending via apple-script, we require a tempGuid
@@ -128,6 +167,7 @@ export class MessageValidator {
 
         // Inject the method (we have to force it to thing it's anything)
         (ctx.request.body as any).method = saniMethod;
+        (ctx.request.body as any).service = messageProtocol ?? service;
 
         // Make sure the message isn't already in the queue
         if (Server().httpService.sendCache.find(tempGuid)) {
@@ -138,7 +178,10 @@ export class MessageValidator {
     }
 
     static sendAttachmentRules = {
-        chatGuid: "required|string",
+        chatGuid: "string",
+        addresses: "array",
+        service: "string",
+        protocol: "string",
         tempGuid: "string",
         method: "string|in:apple-script,private-api",
         name: "required|string",
@@ -151,13 +194,28 @@ export class MessageValidator {
 
     static async validateAttachment(ctx: RouterContext, next: Next) {
         const { files } = ctx.request;
-        const { tempGuid, method, isAudioMessage, effectId, subject, selectedMessageGuid } = ValidateInput(
+        const { tempGuid, method, isAudioMessage, effectId, subject, selectedMessageGuid, chatGuid, addresses, service, protocol } = ValidateInput(
             ctx.request?.body,
             MessageValidator.sendAttachmentRules
         );
+        let messageProtocol = null;
+        try {
+            messageProtocol = MessageInterface.normalizeMessageProtocol(protocol, service);
+        } catch (ex: any) {
+            throw new BadRequest({ error: ex?.message ?? "Invalid message protocol" });
+        }
+
+        if (isEmpty(chatGuid) && isEmpty(addresses)) {
+            throw new BadRequest({ error: `A 'chatGuid' or 'addresses' array is required` });
+        }
+
         let saniMethod = method ?? "apple-script";
-        if (effectId || subject || selectedMessageGuid || ctx.request.body.attributedBody) {
+        if (effectId || subject || selectedMessageGuid || ctx.request.body.attributedBody || !isEmpty(addresses) || messageProtocol) {
             saniMethod = "private-api";
+        }
+
+        if (messageProtocol && isEmpty(addresses)) {
+            throw new BadRequest({ error: `'protocol'/'service' requires an 'addresses' array; chatGuid already determines protocol` });
         }
 
         // If we are sending via apple-script, we require a tempGuid
@@ -168,6 +226,7 @@ export class MessageValidator {
         // Inject the method (we have to force it to thing it's anything)
         (ctx.request.body as any).method = saniMethod;
         (ctx.request.body as any).isAudioMessage = isAudioMessage === "true" ? true : false;
+        (ctx.request.body as any).service = messageProtocol ?? service;
 
         // Make sure the message isn't already in the queue
         if (Server().httpService.sendCache.find(tempGuid)) {
@@ -225,7 +284,10 @@ export class MessageValidator {
     }
 
     static multipartRules = {
-        chatGuid: "required|string",
+        chatGuid: "string",
+        addresses: "array",
+        service: "string",
+        protocol: "string",
         tempGuid: "string",
         effectId: "string",
         subject: "string",
@@ -236,10 +298,26 @@ export class MessageValidator {
     };
 
     static async validateMultipart(ctx: RouterContext, next: Next) {
-        const { parts, tempGuid } = ValidateInput(
+        const { parts, tempGuid, chatGuid, addresses, service, protocol } = ValidateInput(
             ctx.request.body,
             MessageValidator.multipartRules
         );
+        let messageProtocol = null;
+        try {
+            messageProtocol = MessageInterface.normalizeMessageProtocol(protocol, service);
+        } catch (ex: any) {
+            throw new BadRequest({ error: ex?.message ?? "Invalid message protocol" });
+        }
+
+        if (isEmpty(chatGuid) && isEmpty(addresses)) {
+            throw new BadRequest({ error: `A 'chatGuid' or 'addresses' array is required` });
+        }
+
+        if (messageProtocol && isEmpty(addresses)) {
+            throw new BadRequest({ error: `'protocol'/'service' requires an 'addresses' array; chatGuid already determines protocol` });
+        }
+
+        (ctx.request.body as any).service = messageProtocol ?? service;
 
         // Validate the parts. We have a few rules for this:
         // 1. Each part must be a dictionary

@@ -16,6 +16,7 @@ import { FileSystem } from "@server/fileSystem";
 import { ChatResponse } from "@server/types";
 import { startChat } from "../apple/scripts";
 import { MessageInterface } from "./messageInterface";
+import type { MessageProtocol } from "@server/api/types";
 import { CHAT_READ_STATUS_CHANGED } from "@server/events";
 import { ChatSerializer } from "../serializers/ChatSerializer";
 import { Attachment } from "@server/databases/imessage/entity/Attachment";
@@ -148,7 +149,7 @@ export class ChatInterface {
     }: {
         addresses: string[];
         message: string;
-        service: "iMessage" | "SMS";
+        service: MessageProtocol;
         attributedBody?: Record<string, any> | null;
         subject?: string;
         effectId?: string;
@@ -217,7 +218,7 @@ export class ChatInterface {
     }: {
         addresses: string[];
         message: string;
-        service: "iMessage" | "SMS";
+        service: MessageProtocol;
         tempGuid?: string | null;
     }): Promise<Chat> {
         let chatGuid: string;
@@ -292,7 +293,7 @@ export class ChatInterface {
         addresses: string[];
         message?: string | null;
         method?: "apple-script" | "private-api";
-        service?: "iMessage" | "SMS";
+        service?: MessageProtocol | string;
         tempGuid?: string;
         attributedBody?: Record<string, any> | null;
         subject?: string;
@@ -310,6 +311,10 @@ export class ChatInterface {
         } else if (method === "private-api" && isEmpty(message)) {
             throw new Error("A message is required when creating chats with the Private API!");
         }
+        const messageProtocol = MessageInterface.normalizeMessageProtocol(null, service) ?? "iMessage";
+        if (messageProtocol === "RCS" && method !== "private-api") {
+            throw new Error("Creating RCS chats requires the Private API method");
+        }
 
         // Sanitize the addresses
         const theAddrs: string[] = addresses.map(e => getiMessageAddressFormat(e));
@@ -317,7 +322,7 @@ export class ChatInterface {
             return await ChatInterface.createWithPrivateApi({
                 addresses: theAddrs,
                 message,
-                service,
+                service: messageProtocol,
                 attributedBody,
                 subject,
                 effectId
@@ -326,7 +331,7 @@ export class ChatInterface {
             return await ChatInterface.createWithAppleScript({
                 addresses: theAddrs,
                 message,
-                service,
+                service: messageProtocol,
                 tempGuid
             });
         }

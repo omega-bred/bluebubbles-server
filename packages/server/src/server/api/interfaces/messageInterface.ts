@@ -22,7 +22,8 @@ import type {
     SendPollParams,
     ReadPollParams,
     PollData,
-    PollResponse
+    PollResponse,
+    MessageProtocol
 } from "@server/api/types";
 import { Chat } from "@server/databases/imessage/entity/Chat";
 import path from "path";
@@ -45,6 +46,38 @@ export class MessageInterface {
         "-emphasize",
         "-question"
     ];
+
+    static possibleMessageProtocols: MessageProtocol[] = ["iMessage", "SMS", "RCS"];
+
+    private static normalizeSingleMessageProtocol(value?: string | null): MessageProtocol | null {
+        if (value == null) return null;
+
+        const normalized = String(value).trim().toLowerCase();
+        if (normalized.length === 0) return null;
+        if (normalized === "imessage" || normalized === "i-message") return "iMessage";
+        if (normalized === "sms" || normalized === "text" || normalized === "text-message") return "SMS";
+        if (normalized === "rcs") return "RCS";
+
+        throw new Error(
+            `Unsupported message protocol '${value}'. Supported protocols are ${MessageInterface.possibleMessageProtocols.join(", ")}.`
+        );
+    }
+
+    static normalizeMessageProtocol(protocol?: string | null, service?: string | null): MessageProtocol | null {
+        const normalizedProtocol = MessageInterface.normalizeSingleMessageProtocol(protocol);
+        const normalizedService = MessageInterface.normalizeSingleMessageProtocol(service);
+        if (normalizedProtocol && normalizedService && normalizedProtocol !== normalizedService) {
+            throw new Error("Use either 'protocol' or 'service', or provide the same value for both.");
+        }
+
+        return normalizedProtocol ?? normalizedService;
+    }
+
+    private static validateMessageTarget(action: string, chatGuid?: string | null, addresses?: string[] | null): void {
+        if (isEmpty(chatGuid) && isEmpty(addresses)) {
+            throw new Error(`No chat GUID or addresses provided for ${action}`);
+        }
+    }
 
     private static getArchiveObject(objects: any[], value: any): any {
         if (typeof value?.UID !== "number") return value;
@@ -455,6 +488,9 @@ export class MessageInterface {
      */
     static async sendMessageSync({
         chatGuid,
+        addresses = null,
+        protocol = null,
+        service = null,
         message,
         method = "apple-script",
         attributedBody = null,
@@ -466,9 +502,14 @@ export class MessageInterface {
         partIndex = 0,
         ddScan = false
     }: SendMessageParams): Promise<Message> {
-        if (!chatGuid) throw new Error("No chat GUID provided");
+        MessageInterface.validateMessageTarget("sending a message", chatGuid, addresses);
+        if (isEmpty(chatGuid) && method !== "private-api") {
+            throw new Error("Sending by addresses requires the Private API send method");
+        }
+        const messageProtocol = MessageInterface.normalizeMessageProtocol(protocol, service);
+        const sendTarget = isNotEmpty(chatGuid) ? chatGuid : `${messageProtocol ?? "iMessage"}:${addresses.join(",")}`;
 
-        Server().log(`Sending message "${message}" to ${chatGuid}`, "debug");
+        Server().log(`Sending message "${message}" to ${sendTarget}`, "debug");
 
         if (hasTextFormatting(textFormatting)) {
             if (attributedBody) {
@@ -488,21 +529,24 @@ export class MessageInterface {
 
         // We need offsets here due to iMessage's save times being a bit off for some reason
         const now = new Date(new Date().getTime() - 10000).getTime(); // With 10 second offset
-        const awaiter = new MessagePromise({
-            chatGuid,
-            text: message,
-            isAttachment: false,
-            sentAt: now,
-            subject,
-            tempGuid
-        });
+        let awaiter: MessagePromise | null = null;
+        if (isNotEmpty(chatGuid)) {
+            awaiter = new MessagePromise({
+                chatGuid,
+                text: message,
+                isAttachment: false,
+                sentAt: now,
+                subject,
+                tempGuid
+            });
 
-        // Add the promise to the manager
-        Server().log(`Adding await for chat: "${chatGuid}"; text: ${awaiter.text}; tempGuid: ${tempGuid ?? "N/A"}`);
-        Server().messageManager.add(awaiter);
+            // Add the promise to the manager
+            Server().log(`Adding await for chat: "${chatGuid}"; text: ${awaiter.text}; tempGuid: ${tempGuid ?? "N/A"}`);
+            Server().messageManager.add(awaiter);
+        }
 
         // Remove the chat from the typing cache
-        if (Server().typingCache.includes(chatGuid)) {
+        if (isNotEmpty(chatGuid) && Server().typingCache.includes(chatGuid)) {
             Server().typingCache = Server().typingCache.filter(c => c !== chatGuid);
 
             try {
@@ -522,6 +566,8 @@ export class MessageInterface {
         } else if (method === "private-api") {
             sentMessage = await MessageInterface.sendMessagePrivateApi({
                 chatGuid,
+                addresses,
+                service: messageProtocol,
                 message,
                 attributedBody,
                 textFormatting,
@@ -550,6 +596,9 @@ export class MessageInterface {
      */
     static async sendAttachmentSync({
         chatGuid,
+        addresses = null,
+        protocol = null,
+        service = null,
         attachmentPath,
         attachmentName = null,
         attachmentGuid = null,
@@ -561,12 +610,17 @@ export class MessageInterface {
         partIndex = 0,
         isAudioMessage = false
     }: SendAttachmentParams): Promise<Message> {
-        if (!chatGuid) throw new Error("No chat GUID provided");
+        MessageInterface.validateMessageTarget("sending an attachment", chatGuid, addresses);
+        if (isEmpty(chatGuid) && method !== "private-api") {
+            throw new Error("Sending attachments by addresses requires the Private API send method");
+        }
+        const messageProtocol = MessageInterface.normalizeMessageProtocol(protocol, service);
 
         // Copy the attachment to a more permanent storage
         const newPath = FileSystem.copyAttachment(attachmentPath, attachmentName, method);
 
-        Server().log(`Sending attachment "${attachmentName}" to ${chatGuid}`, "debug");
+        const sendTarget = isNotEmpty(chatGuid) ? chatGuid : `${messageProtocol ?? "iMessage"}:${addresses.join(",")}`;
+        Server().log(`Sending attachment "${attachmentName}" to ${sendTarget}`, "debug");
 
         // Make sure messages is open
         if (method === "apple-script") {
@@ -581,19 +635,22 @@ export class MessageInterface {
 
         // We need offsets here due to iMessage's save times being a bit off for some reason
         const now = new Date(new Date().getTime() - 10000).getTime(); // With 10 second offset
-        const awaiter = new MessagePromise({
-            chatGuid: chatGuid,
-            text: aName,
-            isAttachment: true,
-            sentAt: now,
-            tempGuid: attachmentGuid
-        });
+        let awaiter: MessagePromise | null = null;
+        if (isNotEmpty(chatGuid)) {
+            awaiter = new MessagePromise({
+                chatGuid: chatGuid,
+                text: aName,
+                isAttachment: true,
+                sentAt: now,
+                tempGuid: attachmentGuid
+            });
 
-        // Add the promise to the manager
-        Server().log(
-            `Adding await for chat: "${chatGuid}"; attachment: ${aName}; tempGuid: ${attachmentGuid ?? "N/A"}`
-        );
-        Server().messageManager.add(awaiter);
+            // Add the promise to the manager
+            Server().log(
+                `Adding await for chat: "${chatGuid}"; attachment: ${aName}; tempGuid: ${attachmentGuid ?? "N/A"}`
+            );
+            Server().messageManager.add(awaiter);
+        }
 
         let sentMessage = null;
         if (method === "apple-script") {
@@ -603,6 +660,8 @@ export class MessageInterface {
         } else if (method === "private-api") {
             sentMessage = await MessageInterface.sendAttachmentPrivateApi({
                 chatGuid,
+                addresses,
+                service: messageProtocol,
                 filePath: newPath,
                 attributedBody,
                 subject,
@@ -617,7 +676,7 @@ export class MessageInterface {
                 // Wrapped in a try/catch because if the private API returned a sentMessage,
                 // we know it sent, and maybe it just took a while (longer than the timeout).
                 // Only wait for the promise if it's not sent yet.
-                if (sentMessage && !sentMessage.isSent) {
+                if (awaiter && sentMessage && !sentMessage.isSent) {
                     sentMessage = await awaiter.promise;
                 }
             } catch (e) {
@@ -645,6 +704,9 @@ export class MessageInterface {
 
     static async sendMessagePrivateApi({
         chatGuid,
+        addresses = null,
+        protocol = null,
+        service = null,
         message,
         attributedBody = null,
         textFormatting = null,
@@ -655,6 +717,8 @@ export class MessageInterface {
         ddScan = false
     }: SendMessagePrivateApiParams) {
         checkPrivateApiStatus();
+        MessageInterface.validateMessageTarget("sending a message with the Private API", chatGuid, addresses);
+        const messageProtocol = MessageInterface.normalizeMessageProtocol(protocol, service);
         const result = await Server().privateApi.message.send(
             chatGuid,
             message,
@@ -664,7 +728,9 @@ export class MessageInterface {
             effectId ?? null,
             selectedMessageGuid ?? null,
             partIndex ?? 0,
-            ddScan ?? false
+            ddScan ?? false,
+            addresses ?? null,
+            messageProtocol ?? null
         );
 
         if (!result?.identifier) {
@@ -688,6 +754,9 @@ export class MessageInterface {
 
     static async sendAttachmentPrivateApi({
         chatGuid,
+        addresses = null,
+        protocol = null,
+        service = null,
         filePath,
         attributedBody = null,
         subject = null,
@@ -697,6 +766,8 @@ export class MessageInterface {
         isAudioMessage = false
     }: SendAttachmentPrivateApiParams): Promise<Message> {
         checkPrivateApiStatus();
+        MessageInterface.validateMessageTarget("sending an attachment with the Private API", chatGuid, addresses);
+        const messageProtocol = MessageInterface.normalizeMessageProtocol(protocol, service);
 
         if (filePath.endsWith(".mp3") && isAudioMessage) {
             try {
@@ -710,6 +781,8 @@ export class MessageInterface {
 
         const result = await Server().privateApi.attachment.send({
             chatGuid,
+            addresses,
+            service: messageProtocol,
             filePath,
             attributedBody,
             subject,
@@ -951,6 +1024,9 @@ export class MessageInterface {
 
     static async sendMultipart({
         chatGuid,
+        addresses = null,
+        protocol = null,
+        service = null,
         attributedBody = null,
         subject = null,
         effectId = null,
@@ -960,8 +1036,9 @@ export class MessageInterface {
         ddScan = false
     }: SendMultipartTextParams): Promise<Message> {
         checkPrivateApiStatus();
-        if (!chatGuid) throw new Error("No chat GUID provided");
+        MessageInterface.validateMessageTarget("sending a multipart message", chatGuid, addresses);
         if (isEmpty(parts)) throw new Error("No parts provided");
+        const messageProtocol = MessageInterface.normalizeMessageProtocol(protocol, service);
 
         // Copy the attachments with the correct name.
         // And delete the original
@@ -983,7 +1060,9 @@ export class MessageInterface {
             effectId ?? null,
             selectedMessageGuid ?? null,
             partIndex ?? 0,
-            ddScan ?? false
+            ddScan ?? false,
+            addresses ?? null,
+            messageProtocol ?? null
         );
 
         if (!result?.identifier) {

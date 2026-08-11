@@ -236,7 +236,7 @@ export class MessageRouter {
 
     static async sendText(ctx: RouterContext, _: Next) {
         let {
-            tempGuid, message, attributedBody, textFormatting, method, chatGuid,
+            tempGuid, message, attributedBody, textFormatting, method, chatGuid, addresses, service, protocol,
             effectId, subject, selectedMessageGuid, partIndex, ddScan
         } = ctx?.request?.body ?? {};
 
@@ -247,6 +247,9 @@ export class MessageRouter {
             // Send the message
             const sentMessage = await MessageInterface.sendMessageSync({
                 chatGuid,
+                addresses,
+                service,
+                protocol,
                 message,
                 method,
                 attributedBody,
@@ -326,7 +329,20 @@ export class MessageRouter {
 
     static async sendAttachment(ctx: RouterContext, _: Next) {
         const { files } = ctx.request;
-        const { tempGuid, chatGuid, name, method, subject, selectedMessageGuid, partIndex, effectId, isAudioMessage } =
+        const {
+            tempGuid,
+            chatGuid,
+            addresses,
+            service,
+            protocol,
+            name,
+            method,
+            subject,
+            selectedMessageGuid,
+            partIndex,
+            effectId,
+            isAudioMessage
+        } =
             ctx.request?.body ?? {};
         const attachment = files?.attachment as File;
 
@@ -337,6 +353,9 @@ export class MessageRouter {
         try {
             const sentMessage: Message = await MessageInterface.sendAttachmentSync({
                 chatGuid,
+                addresses,
+                service,
+                protocol,
                 attachmentPath: attachment.path,
                 attachmentName: name,
                 attachmentGuid: tempGuid,
@@ -400,7 +419,20 @@ export class MessageRouter {
     }
 
     static async sendMultipartMessage(ctx: RouterContext, _: Next) {
-        let { parts, tempGuid, attributedBody, chatGuid, effectId, subject, selectedMessageGuid, partIndex, ddScan } =
+        let {
+            parts,
+            tempGuid,
+            attributedBody,
+            chatGuid,
+            addresses,
+            service,
+            protocol,
+            effectId,
+            subject,
+            selectedMessageGuid,
+            partIndex,
+            ddScan
+        } =
             ctx?.request?.body ?? {};
 
         // Remove from cache
@@ -412,6 +444,9 @@ export class MessageRouter {
             // Send the message
             const sentMessage = await MessageInterface.sendMultipart({
                 chatGuid,
+                addresses,
+                service,
+                protocol,
                 parts,
                 attributedBody,
                 subject,
