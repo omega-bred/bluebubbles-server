@@ -160,6 +160,7 @@ export class MessageSerializer {
             associatedMessageGuid: message.associatedMessageGuid,
             associatedMessageType: message.associatedMessageType,
             expressiveSendStyleId: message.expressiveSendStyleId,
+            replyToGuid: message.replyToGuid,
             threadOriginatorGuid: message.threadOriginatorGuid,
             hasPayloadData: !!message.payloadData
         };
@@ -185,7 +186,6 @@ export class MessageSerializer {
                         ? message.timeExpressiveSendPlayed.getTime()
                         : null,
                     isAudioMessage: message.isAudioMessage,
-                    replyToGuid: message.replyToGuid,
                     shareStatus: message.shareStatus,
                     shareDirection: message.shareDirection
                 }
