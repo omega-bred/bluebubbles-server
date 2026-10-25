@@ -24,6 +24,7 @@ describe("MCP event evidence helpers", () => {
 
     it.each([
         { after: -1, pending: [], limit: 1 },
+        { after: "0", pending: [], limit: 1 },
         { after: 0, pending: [1, 1], limit: 1 },
         { after: 0, pending: [], limit: 251 },
         { after: 0, pending: [], limit: 1, unexpected: true }

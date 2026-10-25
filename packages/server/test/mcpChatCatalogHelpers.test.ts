@@ -8,8 +8,9 @@ describe("MCP chat catalog helpers", () => {
         const selection = mcpChatCatalogSelection(validateMcpChatCatalogRequest({ groupsOnly: true }));
         expect(selection.sql).toContain("style=43");
         expect(selection.sql).not.toContain("JOIN");
-        expect(selection.sql).toContain("display_name COLLATE NOCASE");
-        expect(selection.parameters).toEqual([]);
+        expect(selection.sql).toContain("sort_name");
+        expect(selection.sql).toContain("COLLATE NOCASE");
+        expect(selection.parameters).toEqual([101]);
     });
 
     it("uses exact identifiers and rejects ambiguous request shapes", () => {
@@ -20,10 +21,13 @@ describe("MCP chat catalog helpers", () => {
         expect(selection.parameters).toEqual([
             "iMessage;-;+14155550123",
             "iMessage;-;+14155550123",
-            "iMessage;-;+14155550123"
+            "iMessage;-;+14155550123",
+            101
         ]);
         expect(() => validateMcpChatCatalogRequest({ groupsOnly: "yes" })).toThrow();
         expect(() => validateMcpChatCatalogRequest({ identifier: " value " })).toThrow();
         expect(() => validateMcpChatCatalogRequest({ unexpected: true })).toThrow();
+        expect(() => validateMcpChatCatalogRequest({ limit: "10" })).toThrow();
+        expect(() => validateMcpChatCatalogRequest({ cursor: "invalid" })).toThrow();
     });
 });

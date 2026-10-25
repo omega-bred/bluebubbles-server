@@ -1,7 +1,8 @@
 import { Context, Next } from "koa";
 import { Server } from "@server";
-import { safeTrim } from "@server/helpers/utils";
 import { ServerError, Unauthorized } from "../responses/errors";
+
+const safeTrim = (value: string): string => (value ?? "").trim();
 
 export const AuthMiddleware = async (ctx: Context, next: Next) => {
     const params = ctx.request.query;

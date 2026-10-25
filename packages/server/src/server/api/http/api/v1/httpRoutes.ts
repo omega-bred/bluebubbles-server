@@ -2,9 +2,6 @@ import * as KoaRouter from "koa-router";
 import { Server } from "@server";
 import { isNotEmpty } from "@server/helpers/utils";
 
-// Middleware
-import { AuthMiddleware } from "./middleware/authMiddleware";
-
 // Routers
 import { ThemeRouter } from "./routers/themeRouter";
 import { HandleRouter } from "./routers/handleRouter";
@@ -17,9 +14,6 @@ import { GeneralRouter } from "./routers/generalRouter";
 import { UiRouter } from "./routers/uiRouter";
 import { SettingsRouter } from "./routers/settingsRouter";
 import { ContactRouter } from "./routers/contactRouter";
-import { MetricsMiddleware } from "./middleware/metricsMiddleware";
-import { LogMiddleware } from "./middleware/logMiddleware";
-import { ErrorMiddleware } from "./middleware/errorMiddleware";
 import { MacOsRouter } from "./routers/macosRouter";
 import { iCloudRouter } from "./routers/icloudRouter";
 import { FaceTimeRouter } from "./routers/facetimeRouter";
@@ -35,11 +29,12 @@ import { AlertsValidator } from "./validators/alertsValidator";
 import { ScheduledMessageValidator } from "./validators/scheduledMessageValidator";
 import { ScheduledMessageRouter } from "./routers/scheduledMessageRouter";
 import { ThemeValidator } from "./validators/themeValidator";
-import type { Context, Next } from "koa";
 import { FindMyRouter } from "./routers/findmyRouter";
 import { getLogger } from "@server/lib/logging/Loggable";
 import { WebhookRouter } from "./routers/webhookRouter";
 import { WebhookValidator } from "./validators/webhookValidator";
+import { MCP_MESSAGE_ROUTES } from "./mcpMessageRoutes";
+import { buildHttpMiddleware, protectedMiddleware, unprotectedMiddleware } from "./routeMiddleware";
 
 export class HttpRoutes {
     static version = 1;
@@ -49,11 +44,11 @@ export class HttpRoutes {
     static defaultResponseTimeout = 5 * 60 * 1000; // 5 minutes
 
     private static get protected() {
-        return [...HttpRoutes.unprotected, AuthMiddleware];
+        return protectedMiddleware();
     }
 
     private static get unprotected() {
-        return [MetricsMiddleware, ErrorMiddleware, LogMiddleware];
+        return unprotectedMiddleware();
     }
 
     static api: HttpDefinition = {
@@ -480,21 +475,7 @@ export class HttpRoutes {
                         validators: [MessageValidator.validateQuery],
                         controller: MessageRouter.query
                     },
-                    {
-                        method: HttpMethod.POST,
-                        path: "mcp/event-evidence",
-                        controller: MessageRouter.mcpEventEvidence
-                    },
-                    {
-                        method: HttpMethod.POST,
-                        path: "mcp/history",
-                        controller: MessageRouter.mcpHistory
-                    },
-                    {
-                        method: HttpMethod.POST,
-                        path: "mcp/chats",
-                        controller: MessageRouter.mcpChatCatalog
-                    },
+                    ...MCP_MESSAGE_ROUTES,
                     {
                         method: HttpMethod.GET,
                         path: "schedule",
@@ -768,66 +749,8 @@ export class HttpRoutes {
         }
     }
 
-    private static TimeoutMiddleware(requestTimeoutMs: number, responseTimeoutMs: number) {
-        return async (ctx: Context, next: Next) => {
-            ctx.req.setTimeout(requestTimeoutMs, () => {
-                ctx.status = 504;
-                ctx.set("Content-Type", "application/json");
-                ctx.res.end(
-                    JSON.stringify({
-                        status: 504,
-                        message: `The request timed-out after ${requestTimeoutMs} ms!`,
-                        error: {
-                            type: "Gateway Timeout",
-                            message: "The data in your request took too long to get to the server!"
-                        }
-                    })
-                );
-            });
-
-            ctx.res.setTimeout(responseTimeoutMs, () => {
-                ctx.status = 504;
-                ctx.set("Content-Type", "application/json");
-                ctx.res.end(
-                    JSON.stringify({
-                        status: 504,
-                        message: `The request timed-out after ${responseTimeoutMs}!`,
-                        error: {
-                            type: "Gateway Timeout",
-                            message: "The server took too long to respond and has timed-out!"
-                        }
-                    })
-                );
-            });
-
-            await next();
-        };
-    }
-
     private static buildMiddleware(group: HttpRouteGroup, route: HttpRoute) {
-        let reqTimeout = this.defaultRequestTimeout;
-        let resTimeout = this.defaultResponseTimeout;
-
-        // Prioritize the route timeout over the group timeout
-        if (route.requestTimeoutMs && route.requestTimeoutMs > 0) {
-            reqTimeout = route.requestTimeoutMs;
-        } else if (group.requestTimeoutMs && group.requestTimeoutMs > 0) {
-            reqTimeout = group.requestTimeoutMs;
-        }
-
-        // Prioritize the route timeout over the group timeout
-        if (route.responseTimeoutMs && route.responseTimeoutMs > 0) {
-            resTimeout = route.responseTimeoutMs;
-        } else if (group.responseTimeoutMs && group.responseTimeoutMs > 0) {
-            resTimeout = group.responseTimeoutMs;
-        }
-
-        return [
-            ...(route?.middleware ?? group.middleware ?? []),
-            this.TimeoutMiddleware(reqTimeout, resTimeout),
-            ...(route.validators ?? []),
-            route.controller
-        ];
+        return buildHttpMiddleware(group, route, this.defaultRequestTimeout, this.defaultResponseTimeout);
     }
 
     private static registerRoute(

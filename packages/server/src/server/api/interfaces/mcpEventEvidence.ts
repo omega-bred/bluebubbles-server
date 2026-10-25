@@ -6,6 +6,7 @@ import {
     pythonCompatibleSourceIdentity,
     validateMcpEventEvidenceRequest
 } from "@server/api/interfaces/mcpEventEvidenceHelpers";
+import { MCP_EVENT_SUCCESS_MESSAGE, mcpSuccessResponseBytes } from "@server/api/interfaces/mcpResponseLimits";
 
 export type { McpEventEvidenceRequest };
 
@@ -48,12 +49,12 @@ const REQUIRED_COLUMNS = [
     "associated_message_guid"
 ];
 
-const OPTIONAL_COLUMNS = [
-    "associated_message_emoji",
-    "cache_has_attachments",
-    "item_type",
-    "is_system_message"
-];
+const OPTIONAL_COLUMNS = ["associated_message_emoji", "cache_has_attachments", "item_type", "is_system_message"];
+
+const SQL_BATCH_SIZE = 500;
+const MAX_CHATS_PER_MESSAGE = 129;
+export const MCP_EVENT_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
+export const MCP_EVENT_MAX_SQL_QUERIES = 12;
 
 function exactNumber(value: unknown, label: string): number {
     const result = typeof value === "bigint" ? Number(value) : Number(value ?? 0);
@@ -93,15 +94,13 @@ export class McpEventEvidence {
         const selected = new Map<number, Record<string, unknown>>();
         if (request.limit > 0) {
             const rows = database
-                .prepare(
-                    `SELECT m.ROWID AS row_id,${fields} FROM message m WHERE m.ROWID>? ORDER BY m.ROWID LIMIT ?`
-                )
+                .prepare(`SELECT m.ROWID AS row_id,${fields} FROM message m WHERE m.ROWID>? ORDER BY m.ROWID LIMIT ?`)
                 .safeIntegers(true)
                 .all(BigInt(request.after), BigInt(request.limit));
             rows.forEach(row => selected.set(exactNumber(row.row_id, "message ROWID"), row));
         }
-        for (let offset = 0; offset < request.pending.length; offset += 500) {
-            const batch = request.pending.slice(offset, offset + 500);
+        for (let offset = 0; offset < request.pending.length; offset += SQL_BATCH_SIZE) {
+            const batch = request.pending.slice(offset, offset + SQL_BATCH_SIZE);
             if (batch.length === 0) continue;
             const marks = batch.map(() => "?").join(",");
             const rows = database
@@ -119,37 +118,81 @@ export class McpEventEvidence {
             .prepare("SELECT COALESCE(MAX(ROWID),0) AS maximum_row FROM chat")
             .safeIntegers(true)
             .get();
-        const rows = Array.from(selected.entries())
-            .sort(([left], [right]) => left - right)
-            .map(([rowId, row]) => McpEventEvidence.serializeRow(database, rowId, row));
-        return {
+        const entries = Array.from(selected.entries()).sort(([left], [right]) => left - right);
+        const chats = McpEventEvidence.loadChats(
+            database,
+            entries.map(([rowId]) => rowId)
+        );
+        const handles = McpEventEvidence.loadHandles(
+            database,
+            entries.map(([, row]) => exactNumber(row.handle_id, "handle ROWID")).filter(handleId => handleId !== 0)
+        );
+        const rows = entries.map(([rowId, row]) => McpEventEvidence.serializeRow(rowId, row, chats, handles));
+        const response = {
             sourceIdentity: pythonCompatibleSourceIdentity(databasePath),
             maximumRow: exactNumber(maximum?.maximum_row, "maximum message ROWID"),
             maximumChatRow: exactNumber(maximumChat?.maximum_row, "maximum chat ROWID"),
             rows
         };
+        if (mcpSuccessResponseBytes(MCP_EVENT_SUCCESS_MESSAGE, response) > MCP_EVENT_RESPONSE_MAX_BYTES) {
+            throw new Error("MCP event evidence exceeds the response byte limit");
+        }
+        return response;
+    }
+
+    private static loadChats(database: SafeIntegerDatabase, rowIds: number[]): Map<number, McpEventEvidenceChat[]> {
+        const result = new Map<number, McpEventEvidenceChat[]>();
+        for (let offset = 0; offset < rowIds.length; offset += SQL_BATCH_SIZE) {
+            const batch = rowIds.slice(offset, offset + SQL_BATCH_SIZE);
+            if (batch.length === 0) continue;
+            const marks = batch.map(() => "?").join(",");
+            const rows = database
+                .prepare(
+                    `SELECT message_id,id,guid FROM (
+                        SELECT j.message_id AS message_id,c.ROWID AS id,c.guid AS guid,
+                            ROW_NUMBER() OVER (PARTITION BY j.message_id ORDER BY c.ROWID) AS position
+                        FROM chat_message_join j JOIN chat c ON c.ROWID=j.chat_id
+                        WHERE j.message_id IN (${marks})
+                    ) WHERE position<=? ORDER BY message_id,id`
+                )
+                .safeIntegers(true)
+                .all(...batch.map(BigInt), MAX_CHATS_PER_MESSAGE + 1);
+            for (const row of rows) {
+                const messageId = exactNumber(row.message_id, "message ROWID");
+                const values = result.get(messageId) ?? [];
+                if (values.length >= MAX_CHATS_PER_MESSAGE) {
+                    throw new Error("MCP event evidence chat association limit exceeded");
+                }
+                values.push({ id: exactNumber(row.id, "chat ROWID"), guid: nullableText(row.guid) });
+                result.set(messageId, values);
+            }
+        }
+        return result;
+    }
+
+    private static loadHandles(database: SafeIntegerDatabase, handleIds: number[]): Map<number, string | null> {
+        const result = new Map<number, string | null>();
+        const unique = Array.from(new Set(handleIds));
+        for (let offset = 0; offset < unique.length; offset += SQL_BATCH_SIZE) {
+            const batch = unique.slice(offset, offset + SQL_BATCH_SIZE);
+            if (batch.length === 0) continue;
+            const marks = batch.map(() => "?").join(",");
+            const rows = database
+                .prepare(`SELECT ROWID AS handle_row,id AS address FROM handle WHERE ROWID IN (${marks})`)
+                .safeIntegers(true)
+                .all(...batch.map(BigInt));
+            rows.forEach(row => result.set(exactNumber(row.handle_row, "handle ROWID"), nullableText(row.address)));
+        }
+        return result;
     }
 
     private static serializeRow(
-        database: SafeIntegerDatabase,
         rowId: number,
-        row: Record<string, unknown>
+        row: Record<string, unknown>,
+        chats: Map<number, McpEventEvidenceChat[]>,
+        handles: Map<number, string | null>
     ): McpEventEvidenceRow {
-        const chats = database
-            .prepare(
-                "SELECT DISTINCT c.ROWID AS id,c.guid FROM chat c JOIN chat_message_join j ON j.chat_id=c.ROWID WHERE j.message_id=? ORDER BY c.ROWID LIMIT 129"
-            )
-            .safeIntegers(true)
-            .all(BigInt(rowId))
-            .map(chat => ({ id: exactNumber(chat.id, "chat ROWID"), guid: nullableText(chat.guid) }));
         const handleId = exactNumber(row.handle_id, "handle ROWID");
-        const handle =
-            handleId === 0
-                ? undefined
-                : database
-                      .prepare("SELECT id FROM handle WHERE ROWID=?")
-                      .safeIntegers(true)
-                      .get(BigInt(handleId));
         return {
             originalROWID: rowId,
             guid: nullableText(row.guid),
@@ -161,8 +204,8 @@ export class McpEventEvidence {
             cacheHasAttachments: Boolean(row.cache_has_attachments),
             itemType: exactNumber(row.item_type, "message item type"),
             isSystemMessage: Boolean(row.is_system_message),
-            sender: nullableText(handle?.id),
-            chats
+            sender: handleId === 0 ? null : handles.get(handleId) ?? null,
+            chats: chats.get(rowId) ?? []
         };
     }
 }

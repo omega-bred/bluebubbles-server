@@ -4,8 +4,11 @@ import {
     mcpMessageHistorySelection,
     validateMcpMessageHistoryRequest
 } from "@server/api/interfaces/mcpMessageHistoryHelpers";
+import { MCP_HISTORY_SUCCESS_MESSAGE, mcpSuccessResponseBytes } from "@server/api/interfaces/mcpResponseLimits";
 
 export type { McpMessageHistoryRequest };
+
+export const MCP_HISTORY_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 
 type SafeIntegerStatement = {
     safeIntegers: (enabled?: boolean) => SafeIntegerStatement;
@@ -55,20 +58,30 @@ export class McpMessageHistory {
             ]
         });
         const byId = new Map(messages.map(message => [message.ROWID, message]));
-        return {
-            rows: selected.map(row => {
-                const rowId = exactNumber(row.row_id, "message ROWID");
-                const message = byId.get(rowId);
-                if (!message) throw new Error("Selected MCP history row could not be decoded");
-                return {
-                    originalROWID: rowId,
-                    guid: message.guid ?? null,
-                    dateApple: String(row.date_apple),
-                    isFromMe: Boolean(message.isFromMe),
-                    text: message.universalText(true),
-                    service: message.service ?? null
-                };
-            })
-        };
+        const rows = selected.map(row => {
+            const rowId = exactNumber(row.row_id, "message ROWID");
+            const message = byId.get(rowId);
+            if (!message) throw new Error("Selected MCP history row could not be decoded");
+            return {
+                originalROWID: rowId,
+                guid: message.guid ?? null,
+                dateApple: String(row.date_apple),
+                isFromMe: Boolean(message.isFromMe),
+                text: message.universalText(true),
+                service: message.service ?? null
+            };
+        });
+        for (const row of rows) {
+            if (
+                mcpSuccessResponseBytes(MCP_HISTORY_SUCCESS_MESSAGE, { rows: [row] }) > MCP_HISTORY_RESPONSE_MAX_BYTES
+            ) {
+                throw new Error("One MCP history row exceeds the response byte limit");
+            }
+        }
+        const response = { rows };
+        if (mcpSuccessResponseBytes(MCP_HISTORY_SUCCESS_MESSAGE, response) > MCP_HISTORY_RESPONSE_MAX_BYTES) {
+            throw new Error("MCP history response exceeds the response byte limit");
+        }
+        return response;
     }
 }

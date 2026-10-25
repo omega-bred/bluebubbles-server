@@ -15,44 +15,8 @@ import { FileStream, Success } from "../responses/success";
 import { BadRequest, IMessageError, NotFound } from "../responses/errors";
 import { parseWithQuery } from "../utils";
 import { isMinVentura } from "@server/env";
-import { McpEventEvidence } from "@server/api/interfaces/mcpEventEvidence";
-import { McpMessageHistory } from "@server/api/interfaces/mcpMessageHistory";
-import { McpChatCatalog } from "@server/api/interfaces/mcpChatCatalog";
 
 export class MessageRouter {
-    static async mcpChatCatalog(ctx: RouterContext, _: Next) {
-        try {
-            return new Success(ctx, {
-                message: "Successfully fetched exact MCP chat catalog!",
-                data: McpChatCatalog.read(ctx?.request?.body ?? {})
-            }).send();
-        } catch (error: any) {
-            throw new BadRequest({ error: error?.message ?? "Invalid MCP chat-catalog request" });
-        }
-    }
-
-    static async mcpHistory(ctx: RouterContext, _: Next) {
-        try {
-            return new Success(ctx, {
-                message: "Successfully fetched exact MCP message history!",
-                data: await McpMessageHistory.read(ctx?.request?.body ?? {})
-            }).send();
-        } catch (error: any) {
-            throw new BadRequest({ error: error?.message ?? "Invalid MCP history request" });
-        }
-    }
-
-    static async mcpEventEvidence(ctx: RouterContext, _: Next) {
-        try {
-            return new Success(ctx, {
-                message: "Successfully fetched exact MCP event evidence!",
-                data: McpEventEvidence.read(ctx?.request?.body ?? {})
-            }).send();
-        } catch (error: any) {
-            throw new BadRequest({ error: error?.message ?? "Invalid MCP event-evidence request" });
-        }
-    }
-
     static async sentCount(ctx: RouterContext, _: Next) {
         const { after, before, chatGuid, minRowId, maxRowId } = ctx.request.query;
         const beforeDate = isNotEmpty(before) ? new Date(Number.parseInt(before as string, 10)) : null;
@@ -201,7 +165,7 @@ export class MessageRouter {
                 const variable = textQueries[0].statement.split(" ")[2].replace(":", "");
                 const operator = textQueries[0].statement.split(" ")[1];
                 const term = textQueries[0].args[variable];
-                
+
                 // Strip the % wildcards from the start/end
                 const strippedTerm = term.replace(/^%+|%+$/g, "");
 
@@ -217,7 +181,7 @@ export class MessageRouter {
                 // To match the behavior of the DB search, we will use the 'exact' match type.
                 // Exact match for the Spotlight API actually means "contains".
                 // A contains match in the Spotlight API tokenizes the search term and matches any token.
-                const matchType = 'contains';
+                const matchType = "contains";
 
                 [messages, totalCount] = await MessageInterface.searchMessagesPrivateApi({
                     chatGuid,
@@ -272,8 +236,20 @@ export class MessageRouter {
 
     static async sendText(ctx: RouterContext, _: Next) {
         let {
-            tempGuid, message, attributedBody, textFormatting, method, chatGuid, addresses, service, protocol,
-            effectId, subject, selectedMessageGuid, partIndex, ddScan
+            tempGuid,
+            message,
+            attributedBody,
+            textFormatting,
+            method,
+            chatGuid,
+            addresses,
+            service,
+            protocol,
+            effectId,
+            subject,
+            selectedMessageGuid,
+            partIndex,
+            ddScan
         } = ctx?.request?.body ?? {};
 
         // Add to send cache
@@ -378,8 +354,7 @@ export class MessageRouter {
             partIndex,
             effectId,
             isAudioMessage
-        } =
-            ctx.request?.body ?? {};
+        } = ctx.request?.body ?? {};
         const attachment = files?.attachment as File;
 
         // Add to send cache
@@ -468,8 +443,7 @@ export class MessageRouter {
             selectedMessageGuid,
             partIndex,
             ddScan
-        } =
-            ctx?.request?.body ?? {};
+        } = ctx?.request?.body ?? {};
 
         // Remove from cache
         if (isNotEmpty(tempGuid)) {

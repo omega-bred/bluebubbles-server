@@ -1,3 +1,5 @@
+import { invalidMcpRequest } from "./mcpErrors";
+
 export type McpMessageHistoryRequest = {
     limit: number;
     anchorApple: bigint;
@@ -15,7 +17,7 @@ function optionalString(request: Record<string, unknown>, name: string, maximum:
     const value = request[name];
     if (value == null) return null;
     if (typeof value !== "string" || value.length === 0 || value.length > maximum || value !== value.trim()) {
-        throw new Error(`${name} must be a non-empty bounded string without surrounding whitespace`);
+        invalidMcpRequest(`${name} must be a non-empty bounded string without surrounding whitespace`);
     }
     return value;
 }
@@ -23,20 +25,20 @@ function optionalString(request: Record<string, unknown>, name: string, maximum:
 function appleInteger(request: Record<string, unknown>, name: string, required = false): bigint | null {
     const value = request[name];
     if (value == null) {
-        if (required) throw new Error(`${name} is required`);
+        if (required) invalidMcpRequest(`${name} is required`);
         return null;
     }
     if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
-        throw new Error(`${name} must be a canonical non-negative 64-bit integer string`);
+        invalidMcpRequest(`${name} must be a canonical non-negative 64-bit integer string`);
     }
     const parsed = BigInt(value);
-    if (parsed > INTEGER64_MAX) throw new Error(`${name} is outside the signed 64-bit range`);
+    if (parsed > INTEGER64_MAX) invalidMcpRequest(`${name} is outside the signed 64-bit range`);
     return parsed;
 }
 
 export function validateMcpMessageHistoryRequest(body: unknown): McpMessageHistoryRequest {
     if (body == null || typeof body !== "object" || Array.isArray(body)) {
-        throw new Error("Expected an MCP history request object");
+        invalidMcpRequest("Expected an MCP history request object");
     }
     const request = body as Record<string, unknown>;
     const supported = new Set([
@@ -50,40 +52,40 @@ export function validateMcpMessageHistoryRequest(body: unknown): McpMessageHisto
         "contactAddress"
     ]);
     if (Object.keys(request).some(key => !supported.has(key))) {
-        throw new Error("Unsupported MCP history request field");
+        invalidMcpRequest("Unsupported MCP history request field");
     }
-    const limit = Number(request.limit);
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 101) {
-        throw new Error("limit must be an integer from 1 through 101");
+    const limit = request.limit;
+    if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 101) {
+        invalidMcpRequest("limit must be an integer from 1 through 101");
     }
     const anchorApple = appleInteger(request, "anchorApple", true) as bigint;
     const lastDateApple = appleInteger(request, "lastDateApple");
     const lastRowValue = request.lastRow;
-    const lastRow = lastRowValue == null ? null : Number(lastRowValue);
+    const lastRow = lastRowValue == null ? null : lastRowValue;
     if ((lastDateApple == null) !== (lastRow == null)) {
-        throw new Error("lastDateApple and lastRow must be supplied together");
+        invalidMcpRequest("lastDateApple and lastRow must be supplied together");
     }
-    if (lastRow != null && (!Number.isSafeInteger(lastRow) || lastRow < 0)) {
-        throw new Error("lastRow must be a non-negative safe integer");
+    if (lastRow != null && (typeof lastRow !== "number" || !Number.isSafeInteger(lastRow) || lastRow < 0)) {
+        invalidMcpRequest("lastRow must be a non-negative safe integer");
     }
     const afterApple = appleInteger(request, "afterApple");
     const beforeApple = appleInteger(request, "beforeApple");
     if (afterApple != null && beforeApple != null && afterApple >= beforeApple) {
-        throw new Error("afterApple must be earlier than beforeApple");
+        invalidMcpRequest("afterApple must be earlier than beforeApple");
     }
     const chatGuid = optionalString(request, "chatGuid", 2048);
     const contactAddress = optionalString(request, "contactAddress", 320);
     if (chatGuid != null && contactAddress != null) {
-        throw new Error("chatGuid and contactAddress are mutually exclusive");
+        invalidMcpRequest("chatGuid and contactAddress are mutually exclusive");
     }
     if (contactAddress != null && !contactAddress.includes("@") && !/^\+[1-9][0-9]{7,14}$/.test(contactAddress)) {
-        throw new Error("contactAddress must be canonical E.164 or an email address");
+        invalidMcpRequest("contactAddress must be canonical E.164 or an email address");
     }
     return {
         limit,
         anchorApple,
         lastDateApple,
-        lastRow,
+        lastRow: lastRow == null ? null : Number(lastRow),
         afterApple,
         beforeApple,
         chatGuid,
@@ -122,7 +124,7 @@ export function mcpMessageHistorySelection(request: McpMessageHistoryRequest): {
             parameters.push(request.contactAddress);
         } else {
             if (!/^\+[1-9][0-9]{7,14}$/.test(request.contactAddress)) {
-                throw new Error("contactAddress must be canonical E.164 or an email address");
+                invalidMcpRequest("contactAddress must be canonical E.164 or an email address");
             }
             const normalized = request.contactAddress.slice(1);
             clauses.push(

@@ -45,8 +45,10 @@ describe("MCP message history helpers", () => {
     it.each([
         {},
         { limit: 0, anchorApple: "1" },
+        { limit: "1", anchorApple: "1" },
         { limit: 1, anchorApple: "01" },
         { limit: 1, anchorApple: "1", lastDateApple: "1" },
+        { limit: 1, anchorApple: "1", lastDateApple: "1", lastRow: "1" },
         { limit: 1, anchorApple: "1", afterApple: "2", beforeApple: "2" },
         { limit: 1, anchorApple: "1", chatGuid: "g", contactAddress: "+14155550123" },
         { limit: 1, anchorApple: "1", contactAddress: "555-0123" },
