@@ -11,7 +11,7 @@ jobs:
   build-and-test:
     runs-on: macos-15
     env:
-      CI: true
+      CI: "true"
 
     steps:
       - uses: actions/checkout@v4
