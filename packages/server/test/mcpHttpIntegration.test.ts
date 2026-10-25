@@ -1,6 +1,7 @@
 import * as http from "http";
 import KoaApp from "koa";
 import koaBody from "koa-body";
+import koaJson from "koa-json";
 import KoaRouter from "koa-router";
 
 const mockLogs: string[] = [];
@@ -14,6 +15,7 @@ const mockServer = {
 
 import { setMcpTestServer } from "./support/mcpServerMock";
 import { McpChatCatalog } from "../src/server/api/interfaces/mcpChatCatalog";
+import { MCP_CHAT_PAGE_MAX_BYTES } from "../src/server/api/interfaces/mcpChatCatalog";
 import { McpEventEvidence } from "../src/server/api/interfaces/mcpEventEvidence";
 import { McpMessageHistory } from "../src/server/api/interfaces/mcpMessageHistory";
 import { MCP_MESSAGE_ROUTES } from "../src/server/api/http/api/v1/mcpMessageRoutes";
@@ -24,7 +26,7 @@ import { LogMiddleware } from "../src/server/api/http/api/v1/middleware/logMiddl
 import { MetricsMiddleware } from "../src/server/api/http/api/v1/middleware/metricsMiddleware";
 import type { HttpRouteGroup } from "../src/server/api/http/types";
 
-type HttpResult = { status: number; body: any };
+type HttpResult = { status: number; body: any; bytes: number; text: string };
 
 const group: HttpRouteGroup = {
     name: "Message",
@@ -36,6 +38,7 @@ const group: HttpRouteGroup = {
 async function withServer(run: (port: number) => Promise<void>): Promise<void> {
     const app = new KoaApp();
     app.use(koaBody({ jsonLimit: "64kb", parsedMethods: ["POST"] }));
+    app.use(koaJson({ pretty: false, param: "pretty" }));
     const router = new KoaRouter();
     for (const route of MCP_MESSAGE_ROUTES) {
         router.post(`/api/v1/message/${route.path}`, ...buildHttpMiddleware(group, route, 5_000, 5_000));
@@ -57,9 +60,12 @@ async function withServer(run: (port: number) => Promise<void>): Promise<void> {
     }
 }
 
-function post(port: number, path: string, body: unknown, credential?: string): Promise<HttpResult> {
+function post(port: number, path: string, body: unknown, credential?: string, pretty = false): Promise<HttpResult> {
     return new Promise((resolve, reject) => {
-        const suffix = credential == null ? "" : `?password=${encodeURIComponent(credential)}`;
+        const query = new URLSearchParams();
+        if (credential != null) query.set("password", credential);
+        if (pretty) query.set("pretty", "1");
+        const suffix = query.size === 0 ? "" : `?${query.toString()}`;
         const payload = Buffer.from(JSON.stringify(body), "utf8");
         const request = http.request(
             {
@@ -74,7 +80,12 @@ function post(port: number, path: string, body: unknown, credential?: string): P
                 response.on("data", chunk => chunks.push(Buffer.from(chunk)));
                 response.on("end", () => {
                     const text = Buffer.concat(chunks).toString("utf8");
-                    resolve({ status: response.statusCode ?? 0, body: text.length === 0 ? null : JSON.parse(text) });
+                    resolve({
+                        status: response.statusCode ?? 0,
+                        body: text.length === 0 ? null : JSON.parse(text),
+                        bytes: Buffer.byteLength(text, "utf8"),
+                        text
+                    });
                 });
             }
         );
@@ -140,6 +151,46 @@ describe("MCP HTTP authentication and middleware", () => {
             expect(result.body.status).toBe(200);
         });
         expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps an authenticated production-pretty chat response within the full wire-byte cap", async () => {
+        const rows = Array.from({ length: 101 }, (_, index) => {
+            const name = `name-${String(index).padStart(3, "0")}-${"x".repeat(1800)}`;
+            return {
+                row_id: BigInt(101 - index),
+                guid: `iMessage;+;synthetic-${index}`,
+                chat_identifier: `synthetic-${index}`,
+                display_name: name,
+                room_name: null,
+                style: BigInt(43),
+                sort_rank: BigInt(0),
+                sort_name: name
+            };
+        });
+        const statement: any = {
+            safeIntegers: () => statement,
+            all: () => rows
+        };
+        setMcpTestServer({
+            ...mockServer,
+            iMessageRepo: { db: { driver: { databaseConnection: { prepare: () => statement } } } }
+        });
+
+        await withServer(async port => {
+            const result = await post(
+                port,
+                "mcp/chats",
+                { groupsOnly: true, limit: 100 },
+                "synthetic-test-credential",
+                true
+            );
+            expect(result.status).toBe(200);
+            expect(result.text).toContain("\n");
+            expect(result.bytes).toBeGreaterThan(MCP_CHAT_PAGE_MAX_BYTES - 4096);
+            expect(result.bytes).toBeLessThanOrEqual(MCP_CHAT_PAGE_MAX_BYTES);
+            expect(result.body.data.rows.length).toBeLessThan(100);
+            expect(result.body.data.nextCursor).not.toBeNull();
+        });
     });
 
     it.each(endpoints)("returns a generic 500 and redacts internal $path failures", async endpoint => {

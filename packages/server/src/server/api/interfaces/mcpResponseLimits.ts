@@ -3,5 +3,9 @@ export const MCP_HISTORY_SUCCESS_MESSAGE = "Successfully fetched exact MCP messa
 export const MCP_EVENT_SUCCESS_MESSAGE = "Successfully fetched exact MCP event evidence!";
 
 export function mcpSuccessResponseBytes(message: string, data: unknown): number {
-    return Buffer.byteLength(JSON.stringify({ status: 200, message, data }), "utf8");
+    const response = { status: 200, message, data };
+    return Math.max(
+        Buffer.byteLength(JSON.stringify(response), "utf8"),
+        Buffer.byteLength(JSON.stringify(response, null, 2), "utf8")
+    );
 }
