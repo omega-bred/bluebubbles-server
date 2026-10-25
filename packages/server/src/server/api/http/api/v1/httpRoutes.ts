@@ -481,6 +481,21 @@ export class HttpRoutes {
                         controller: MessageRouter.query
                     },
                     {
+                        method: HttpMethod.POST,
+                        path: "mcp/event-evidence",
+                        controller: MessageRouter.mcpEventEvidence
+                    },
+                    {
+                        method: HttpMethod.POST,
+                        path: "mcp/history",
+                        controller: MessageRouter.mcpHistory
+                    },
+                    {
+                        method: HttpMethod.POST,
+                        path: "mcp/chats",
+                        controller: MessageRouter.mcpChatCatalog
+                    },
+                    {
                         method: HttpMethod.GET,
                         path: "schedule",
                         controller: ScheduledMessageRouter.getScheduledMessages

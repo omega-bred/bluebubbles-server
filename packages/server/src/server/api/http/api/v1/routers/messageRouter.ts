@@ -15,8 +15,44 @@ import { FileStream, Success } from "../responses/success";
 import { BadRequest, IMessageError, NotFound } from "../responses/errors";
 import { parseWithQuery } from "../utils";
 import { isMinVentura } from "@server/env";
+import { McpEventEvidence } from "@server/api/interfaces/mcpEventEvidence";
+import { McpMessageHistory } from "@server/api/interfaces/mcpMessageHistory";
+import { McpChatCatalog } from "@server/api/interfaces/mcpChatCatalog";
 
 export class MessageRouter {
+    static async mcpChatCatalog(ctx: RouterContext, _: Next) {
+        try {
+            return new Success(ctx, {
+                message: "Successfully fetched exact MCP chat catalog!",
+                data: McpChatCatalog.read(ctx?.request?.body ?? {})
+            }).send();
+        } catch (error: any) {
+            throw new BadRequest({ error: error?.message ?? "Invalid MCP chat-catalog request" });
+        }
+    }
+
+    static async mcpHistory(ctx: RouterContext, _: Next) {
+        try {
+            return new Success(ctx, {
+                message: "Successfully fetched exact MCP message history!",
+                data: await McpMessageHistory.read(ctx?.request?.body ?? {})
+            }).send();
+        } catch (error: any) {
+            throw new BadRequest({ error: error?.message ?? "Invalid MCP history request" });
+        }
+    }
+
+    static async mcpEventEvidence(ctx: RouterContext, _: Next) {
+        try {
+            return new Success(ctx, {
+                message: "Successfully fetched exact MCP event evidence!",
+                data: McpEventEvidence.read(ctx?.request?.body ?? {})
+            }).send();
+        } catch (error: any) {
+            throw new BadRequest({ error: error?.message ?? "Invalid MCP event-evidence request" });
+        }
+    }
+
     static async sentCount(ctx: RouterContext, _: Next) {
         const { after, before, chatGuid, minRowId, maxRowId } = ctx.request.query;
         const beforeDate = isNotEmpty(before) ? new Date(Number.parseInt(before as string, 10)) : null;
