@@ -42,6 +42,17 @@ describe("MCP message history helpers", () => {
         expect(selection.parameters).toContain("Person@Example.com");
     });
 
+    it("accepts a bounded backend fuzzy-scoring request", () => {
+        const request = validateMcpMessageHistoryRequest({
+            limit: 101,
+            anchorApple: "8",
+            searchTerm: "meeting tomorow",
+            threshold: 0.6
+        });
+        expect(request.searchTerm).toBe("meeting tomorow");
+        expect(request.threshold).toBe(0.6);
+    });
+
     it.each([
         {},
         { limit: 0, anchorApple: "1" },
@@ -52,6 +63,9 @@ describe("MCP message history helpers", () => {
         { limit: 1, anchorApple: "1", afterApple: "2", beforeApple: "2" },
         { limit: 1, anchorApple: "1", chatGuid: "g", contactAddress: "+14155550123" },
         { limit: 1, anchorApple: "1", contactAddress: "555-0123" },
+        { limit: 1, anchorApple: "1", searchTerm: "x" },
+        { limit: 1, anchorApple: "1", threshold: 0.5 },
+        { limit: 1, anchorApple: "1", searchTerm: "x", threshold: 2 },
         { limit: 1, anchorApple: "1", unexpected: true }
     ])("rejects malformed or scope-ambiguous input %#", request => {
         expect(() => validateMcpMessageHistoryRequest(request)).toThrow();

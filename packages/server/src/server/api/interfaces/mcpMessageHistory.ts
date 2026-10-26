@@ -5,6 +5,7 @@ import {
     validateMcpMessageHistoryRequest
 } from "@server/api/interfaces/mcpMessageHistoryHelpers";
 import { MCP_HISTORY_SUCCESS_MESSAGE, mcpSuccessResponseBytes } from "@server/api/interfaces/mcpResponseLimits";
+import { McpMatchingBudget, messageSimilarity } from "@server/api/interfaces/mcpMatchingHelpers";
 
 export type { McpMessageHistoryRequest };
 
@@ -34,6 +35,8 @@ export class McpMessageHistory {
             isFromMe: boolean;
             text: string | null;
             service: string | null;
+            score?: number;
+            matches?: boolean;
         }>;
     }> {
         const request = validateMcpMessageHistoryRequest(body);
@@ -58,11 +61,21 @@ export class McpMessageHistory {
             ]
         });
         const byId = new Map(messages.map(message => [message.ROWID, message]));
+        const matchingBudget = new McpMatchingBudget();
         const rows = selected.map(row => {
             const rowId = exactNumber(row.row_id, "message ROWID");
             const message = byId.get(rowId);
             if (!message) throw new Error("Selected MCP history row could not be decoded");
-            return {
+            const result: {
+                originalROWID: number;
+                guid: string | null;
+                dateApple: string;
+                isFromMe: boolean;
+                text: string | null;
+                service: string | null;
+                score?: number;
+                matches?: boolean;
+            } = {
                 originalROWID: rowId,
                 guid: message.guid ?? null,
                 dateApple: String(row.date_apple),
@@ -70,6 +83,11 @@ export class McpMessageHistory {
                 text: message.universalText(true),
                 service: message.service ?? null
             };
+            if (request.searchTerm != null && request.threshold != null) {
+                result.score = messageSimilarity(request.searchTerm, result.text, matchingBudget);
+                result.matches = result.score >= request.threshold;
+            }
+            return result;
         });
         for (const row of rows) {
             if (

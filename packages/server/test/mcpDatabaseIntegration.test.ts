@@ -11,6 +11,8 @@ import {
     MCP_EVENT_RESPONSE_MAX_BYTES
 } from "../src/server/api/interfaces/mcpEventEvidence";
 import { McpMessageHistory, MCP_HISTORY_RESPONSE_MAX_BYTES } from "../src/server/api/interfaces/mcpMessageHistory";
+import { McpContactActivity } from "../src/server/api/interfaces/mcpContactActivity";
+import { McpAttachmentMetadata } from "../src/server/api/interfaces/mcpAttachmentMetadata";
 import {
     MCP_CHAT_SUCCESS_MESSAGE,
     MCP_EVENT_SUCCESS_MESSAGE,
@@ -80,7 +82,12 @@ class CliDatabase {
             "associated_message_type",
             "cache_has_attachments",
             "item_type",
-            "is_system_message"
+            "is_system_message",
+            "message_row",
+            "chat_row",
+            "has_attachments",
+            "attachment_row",
+            "total_bytes"
         ]);
         return rows.map(row =>
             Object.fromEntries(
@@ -149,14 +156,19 @@ describe("MCP database-backed behavior", () => {
                 associated_message_emoji TEXT,cache_has_attachments INTEGER,
                 item_type INTEGER,is_system_message INTEGER,text TEXT,service TEXT
              );
-             CREATE TABLE chat_message_join(chat_id INTEGER,message_id INTEGER);`
+             CREATE TABLE chat_message_join(chat_id INTEGER,message_id INTEGER);
+             CREATE TABLE chat_handle_join(chat_id INTEGER,handle_id INTEGER);
+             CREATE TABLE attachment(
+                guid TEXT,filename TEXT,transfer_name TEXT,mime_type TEXT,uti TEXT,total_bytes INTEGER
+             );
+             CREATE TABLE message_attachment_join(message_id INTEGER,attachment_id INTEGER);`
         );
         database = new CliDatabase(databasePath);
         const repository = {
             dbPath: databasePath,
             db: { driver: { databaseConnection: database } },
             getMessages: async (options: any) => {
-                const ids = options.where[0].args.mcpHistoryIds as number[];
+                const ids = (options.where[0].args.mcpHistoryIds ?? options.where[0].args.mcpActivityIds) as number[];
                 if (ids.length === 0) return [[], 0];
                 const marks = ids.map(() => "?").join(",");
                 const rows = database.query(
@@ -167,6 +179,7 @@ describe("MCP database-backed behavior", () => {
                     ROWID: Number(row.row_id),
                     guid: row.guid,
                     isFromMe: Boolean(row.is_from_me),
+                    text: row.text,
                     service: row.service,
                     universalText: () => row.text
                 }));
@@ -279,6 +292,124 @@ describe("MCP database-backed behavior", () => {
             lastRow: 1
         });
         expect(empty.rows).toEqual([]);
+    });
+
+    it("scores fuzzy history rows in BlueBubbles while preserving scanned-page ordering", async () => {
+        execute(
+            databasePath,
+            `INSERT INTO message(ROWID,guid,date,handle_id,is_from_me,associated_message_type,text,service)
+             VALUES(1,'m1',100,0,0,0,'meeting tomorrow at noon','iMessage'),
+                   (2,'m2',200,0,0,0,'unrelated body','iMessage');`
+        );
+        const page = await McpMessageHistory.read({
+            limit: 2,
+            anchorApple: "500000000000",
+            searchTerm: "meeting tomorow",
+            threshold: 0.6
+        });
+        expect(page.rows.map(row => row.originalROWID)).toEqual([2, 1]);
+        expect(page.rows[0].matches).toBe(false);
+        expect(page.rows[1].matches).toBe(true);
+        expect(page.rows[1].score).toBeGreaterThanOrEqual(0.6);
+    });
+
+    it("fails the whole fuzzy page before returning rows when its shared CPU budget is exhausted", async () => {
+        execute(
+            databasePath,
+            `INSERT INTO message(ROWID,guid,date,handle_id,is_from_me,associated_message_type,text,service)
+             VALUES(1,'m1',100,0,0,0,${sqlLiteral("b".repeat(2000))},'iMessage');`
+        );
+        await expect(
+            McpMessageHistory.read({
+                limit: 1,
+                anchorApple: "500000000000",
+                searchTerm: "a".repeat(2000),
+                threshold: 0.6
+            })
+        ).rejects.toThrow("bounded computation budget");
+    });
+
+    it("computes exact-alias activity across every shared chat before limiting", async () => {
+        execute(
+            databasePath,
+            `INSERT INTO handle(ROWID,id) VALUES(1,'+1 (415) 555-0123'),(2,'other@example.com');
+             INSERT INTO chat(ROWID,guid,style) VALUES(10,'iMessage;+;direct',45),(11,'iMessage;+;group',43);
+             INSERT INTO chat_handle_join(chat_id,handle_id) VALUES(10,1),(11,1),(11,2);
+             INSERT INTO message(ROWID,guid,date,handle_id,is_from_me,associated_message_type,text,service)
+             VALUES(20,'old',100,1,0,0,'old','iMessage'),(21,'new',200,2,1,0,'new','iMessage');
+             INSERT INTO chat_message_join(chat_id,message_id) VALUES(10,20),(11,21);
+             INSERT INTO attachment(ROWID,guid,filename,transfer_name,mime_type,uti,total_bytes)
+             VALUES(30,'a30','~/Library/Messages/Attachments/photo.jpg','photo.jpg','image/jpeg','public.jpeg',1234);
+             INSERT INTO message_attachment_join(message_id,attachment_id) VALUES(21,30);`
+        );
+        const response = await McpContactActivity.read({ addresses: ["+14155550123"], limit: 1 });
+        expect(response.rows).toEqual([
+            expect.objectContaining({
+                messageId: 21,
+                messageGuid: "new",
+                text: "new",
+                textStatus: "plain_text",
+                hasAttachments: true,
+                chat: expect.objectContaining({ id: 11, type: "group", participantCount: 2 }),
+                attachments: expect.objectContaining({
+                    status: "ok",
+                    items: [expect.objectContaining({ id: 30, name: "photo.jpg" })]
+                })
+            })
+        ]);
+        expect(response.coverage).toMatchObject({
+            matchedHandleCount: 1,
+            matchedChatCount: 2,
+            unmatchedAddresses: [],
+            truncated: true
+        });
+    });
+
+    it("searches attachment metadata in the backend and resolves an exact ROWID", () => {
+        execute(
+            databasePath,
+            `INSERT INTO handle(ROWID,id) VALUES(1,'person@example.com');
+             INSERT INTO message(ROWID,guid,date,handle_id,is_from_me,associated_message_type,text,service)
+             VALUES(20,'m20',200,1,0,0,'with attachment','iMessage');
+             INSERT INTO attachment(ROWID,guid,filename,transfer_name,mime_type,uti,total_bytes)
+             VALUES(30,'a30','~/Library/Messages/Attachments/photo.jpg','photo.jpg','image/jpeg','public.jpeg',1234),
+                   (31,'a31','~/Library/Messages/Attachments/note.pdf','note.pdf','application/pdf','com.adobe.pdf',4321);
+             INSERT INTO message_attachment_join(message_id,attachment_id) VALUES(20,30),(20,31);`
+        );
+        const searched = McpAttachmentMetadata.read({
+            contactAddress: "person@example.com",
+            mimeType: "image/",
+            startApple: "100000000000",
+            endApple: "300000000000",
+            limit: 10
+        });
+        expect(searched.rows).toEqual([
+            expect.objectContaining({
+                attachmentId: 30,
+                attachmentGuid: "a30",
+                filePath: "~/Library/Messages/Attachments/photo.jpg",
+                filename: "photo.jpg",
+                mimeType: "image/jpeg",
+                downloadMimeType: "image/jpeg",
+                messageId: 20
+            })
+        ]);
+        const exact = McpAttachmentMetadata.read({ attachmentId: 31 });
+        expect(exact.rows).toEqual([expect.objectContaining({ attachmentId: 31, filename: "note.pdf" })]);
+    });
+
+    it("advertises the existing non-original download conversion MIME for HEIC and CAF", () => {
+        execute(
+            databasePath,
+            `INSERT INTO message(ROWID,guid,date,handle_id,is_from_me,associated_message_type,text,service)
+             VALUES(20,'m20',200,0,0,0,'media','iMessage');
+             INSERT INTO attachment(ROWID,guid,filename,transfer_name,mime_type,uti,total_bytes)
+             VALUES(30,'a30','/tmp/photo.heic','photo.heic','image/heic','public.heic',1234),
+                   (31,'a31','/tmp/note.caf','note.caf','audio/x-caf','com.apple.coreaudio-format',4321);
+             INSERT INTO message_attachment_join(message_id,attachment_id) VALUES(20,30),(20,31);`
+        );
+        expect(McpAttachmentMetadata.read({ attachmentId: 30 }).rows[0].downloadMimeType).toBe("image/jpeg");
+        expect(McpAttachmentMetadata.read({ attachmentId: 31 }).rows[0].downloadMimeType).toBe("audio/mp3");
     });
 
     it("preserves exact 64-bit native timestamps in database-backed history ordering", async () => {

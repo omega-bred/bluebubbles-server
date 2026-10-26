@@ -1,4 +1,7 @@
 import * as http from "http";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import KoaApp from "koa";
 import koaBody from "koa-body";
 import koaJson from "koa-json";
@@ -18,6 +21,10 @@ import { McpChatCatalog } from "../src/server/api/interfaces/mcpChatCatalog";
 import { MCP_CHAT_PAGE_MAX_BYTES } from "../src/server/api/interfaces/mcpChatCatalog";
 import { McpEventEvidence } from "../src/server/api/interfaces/mcpEventEvidence";
 import { McpMessageHistory } from "../src/server/api/interfaces/mcpMessageHistory";
+import { McpContactMatch } from "../src/server/api/interfaces/mcpContactMatch";
+import { McpContactActivity } from "../src/server/api/interfaces/mcpContactActivity";
+import { McpAttachmentMetadata } from "../src/server/api/interfaces/mcpAttachmentMetadata";
+import { McpAttachmentTranscription } from "../src/server/api/interfaces/mcpAttachmentTranscription";
 import { MCP_MESSAGE_ROUTES } from "../src/server/api/http/api/v1/mcpMessageRoutes";
 import { buildHttpMiddleware, protectedMiddleware } from "../src/server/api/http/api/v1/routeMiddleware";
 import { AuthMiddleware } from "../src/server/api/http/api/v1/middleware/authMiddleware";
@@ -115,6 +122,36 @@ const endpoints = [
                 maximumChatRow: 0,
                 rows: []
             })
+    },
+    {
+        path: "mcp/contacts",
+        body: { query: "Alex", limit: 10, threshold: 0.6 },
+        spy: () =>
+            jest.spyOn(McpContactMatch, "read").mockResolvedValue({ rows: [], totalMatches: 0, truncated: false })
+    },
+    {
+        path: "mcp/activity",
+        body: { addresses: ["+14155550123"], limit: 1 },
+        spy: () =>
+            jest.spyOn(McpContactActivity, "read").mockResolvedValue({
+                rows: [],
+                coverage: {
+                    matchedHandleCount: 0,
+                    matchedChatCount: 0,
+                    unmatchedAddresses: ["+14155550123"],
+                    truncated: false
+                }
+            })
+    },
+    {
+        path: "mcp/attachments",
+        body: { attachmentId: 1 },
+        spy: () => jest.spyOn(McpAttachmentMetadata, "read").mockReturnValue({ rows: [] })
+    },
+    {
+        path: "mcp/attachments/transcribe",
+        body: { attachmentId: 1 },
+        spy: () => jest.spyOn(McpAttachmentTranscription, "read").mockResolvedValue({ text: "fixture" })
     }
 ];
 
@@ -151,6 +188,75 @@ describe("MCP HTTP authentication and middleware", () => {
             expect(result.body.status).toBe(200);
         });
         expect(handler).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps lightweight authenticated reads responsive and rejects a second transcription while one is pending", async () => {
+        const directory = mkdtempSync(join(tmpdir(), "bluebubbles-transcription-http-test-"));
+        const source = join(directory, "voice.caf");
+        const model = join(directory, "model.bin");
+        writeFileSync(source, Buffer.from([1, 2, 3]));
+        writeFileSync(model, Buffer.from([1]));
+        const statement: any = {
+            safeIntegers: () => statement,
+            get: () => ({
+                filename: source,
+                total_bytes: BigInt(3),
+                mime_type: "audio/x-caf",
+                uti: "com.apple.coreaudio-format"
+            })
+        };
+        setMcpTestServer({
+            ...mockServer,
+            iMessageRepo: { db: { driver: { databaseConnection: { prepare: () => statement } } } }
+        });
+        const originalRead = McpAttachmentTranscription.read.bind(McpAttachmentTranscription);
+        let markStarted: (() => void) | undefined;
+        let releaseRunner: (() => void) | undefined;
+        const started = new Promise<void>(resolve => (markStarted = resolve));
+        const held = new Promise<{ status: number | null }>(resolve => (releaseRunner = () => resolve({ status: 1 })));
+        const runner = jest.fn(async () => {
+            markStarted?.();
+            return held;
+        });
+        jest.spyOn(McpAttachmentTranscription, "read").mockImplementation(body =>
+            originalRead(body, runner, {
+                MESSAGES_ATTACHMENT_ROOT: directory,
+                MESSAGES_WHISPER_MODEL: model,
+                MESSAGES_FFMPEG: "synthetic-ffmpeg"
+            })
+        );
+        jest.spyOn(McpChatCatalog, "read").mockReturnValue({ rows: [], nextCursor: null });
+
+        let first: Promise<HttpResult> | undefined;
+        try {
+            await withServer(async port => {
+                first = post(port, "mcp/attachments/transcribe", { attachmentId: 1 }, "synthetic-test-credential");
+                try {
+                    await started;
+                    const quick = Promise.all([
+                        post(port, "mcp/chats", { groupsOnly: true, limit: 1 }, "synthetic-test-credential"),
+                        post(port, "mcp/attachments/transcribe", { attachmentId: 1 }, "synthetic-test-credential")
+                    ]);
+                    const [read, busy] = await Promise.race([
+                        quick,
+                        new Promise<never>((_, reject) =>
+                            setTimeout(() => reject(new Error("lightweight read was blocked by transcription")), 750)
+                        )
+                    ]);
+                    expect(read.status).toBe(200);
+                    expect(read.body.data.rows).toEqual([]);
+                    expect(busy.status).toBe(200);
+                    expect(busy.body.data.text).toContain("another voice note is being transcribed");
+                } finally {
+                    releaseRunner?.();
+                    await first;
+                }
+            });
+        } finally {
+            releaseRunner?.();
+            rmSync(directory, { recursive: true, force: true });
+        }
+        expect(runner).toHaveBeenCalledTimes(1);
     });
 
     it("keeps an authenticated production-pretty chat response within the full wire-byte cap", async () => {
@@ -210,7 +316,11 @@ describe("MCP HTTP authentication and middleware", () => {
     it.each([
         { path: "mcp/chats", body: { groupsOnly: "yes" } },
         { path: "mcp/history", body: {} },
-        { path: "mcp/event-evidence", body: { after: -1, pending: [], limit: 1 } }
+        { path: "mcp/event-evidence", body: { after: -1, pending: [], limit: 1 } },
+        { path: "mcp/contacts", body: { query: "" } },
+        { path: "mcp/activity", body: { addresses: [] } },
+        { path: "mcp/attachments", body: { attachmentId: 0 } },
+        { path: "mcp/attachments/transcribe", body: { attachmentId: 0 } }
     ])("keeps safe validation failures as 400 for $path", async endpoint => {
         await withServer(async port => {
             const result = await post(port, endpoint.path, endpoint.body, "synthetic-test-credential");

@@ -3,6 +3,7 @@ module.exports = {
     testMatch: ["<rootDir>/test/mcp*.test.ts"],
     moduleNameMapper: {
         "^@server$": "<rootDir>/test/support/mcpServerMock.ts",
+        "^@server/api/interfaces/contactInterface$": "<rootDir>/test/support/mcpContactInterfaceMock.ts",
         "^@server/(.*)$": "<rootDir>/src/server/$1"
     },
     transform: {

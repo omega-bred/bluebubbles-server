@@ -9,6 +9,8 @@ export type McpMessageHistoryRequest = {
     beforeApple: bigint | null;
     chatGuid: string | null;
     contactAddress: string | null;
+    searchTerm: string | null;
+    threshold: number | null;
 };
 
 const INTEGER64_MAX = BigInt("9223372036854775807");
@@ -49,7 +51,9 @@ export function validateMcpMessageHistoryRequest(body: unknown): McpMessageHisto
         "afterApple",
         "beforeApple",
         "chatGuid",
-        "contactAddress"
+        "contactAddress",
+        "searchTerm",
+        "threshold"
     ]);
     if (Object.keys(request).some(key => !supported.has(key))) {
         invalidMcpRequest("Unsupported MCP history request field");
@@ -81,6 +85,18 @@ export function validateMcpMessageHistoryRequest(body: unknown): McpMessageHisto
     if (contactAddress != null && !contactAddress.includes("@") && !/^\+[1-9][0-9]{7,14}$/.test(contactAddress)) {
         invalidMcpRequest("contactAddress must be canonical E.164 or an email address");
     }
+    const searchTerm = optionalString(request, "searchTerm", 4096);
+    const thresholdValue = request.threshold;
+    const threshold = thresholdValue == null ? null : thresholdValue;
+    if ((searchTerm == null) !== (threshold == null)) {
+        invalidMcpRequest("searchTerm and threshold must be supplied together");
+    }
+    if (
+        threshold != null &&
+        (typeof threshold !== "number" || !Number.isFinite(threshold) || threshold < 0 || threshold > 1)
+    ) {
+        invalidMcpRequest("threshold must be a finite number from 0 through 1");
+    }
     return {
         limit,
         anchorApple,
@@ -89,7 +105,9 @@ export function validateMcpMessageHistoryRequest(body: unknown): McpMessageHisto
         afterApple,
         beforeApple,
         chatGuid,
-        contactAddress
+        contactAddress,
+        searchTerm,
+        threshold: threshold == null ? null : Number(threshold)
     };
 }
 
