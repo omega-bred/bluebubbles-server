@@ -1,3 +1,9 @@
+import {
+    McpChatExclusions,
+    MCP_CHAT_EXCLUSION_FIELDS,
+    validateMcpChatExclusions,
+    mcpExcludedAttachmentPredicate
+} from "./mcpChatExclusions";
 import { Server } from "@server";
 import { invalidMcpRequest } from "@server/api/interfaces/mcpErrors";
 import { MCP_ATTACHMENT_SUCCESS_MESSAGE, mcpSuccessResponseBytes } from "@server/api/interfaces/mcpResponseLimits";
@@ -13,7 +19,7 @@ type SafeIntegerDatabase = {
     prepare: (sql: string) => SafeIntegerStatement;
 };
 
-type Request = {
+type Request = McpChatExclusions & {
     attachmentId: number | null;
     startApple: bigint | null;
     endApple: bigint | null;
@@ -55,7 +61,15 @@ function validate(body: unknown): Request {
         invalidMcpRequest("Expected an MCP attachment-metadata request object");
     }
     const request = body as Record<string, unknown>;
-    const supported = ["attachmentId", "startApple", "endApple", "contactAddress", "mimeType", "limit"];
+    const supported = [
+        ...MCP_CHAT_EXCLUSION_FIELDS,
+        "attachmentId",
+        "startApple",
+        "endApple",
+        "contactAddress",
+        "mimeType",
+        "limit"
+    ];
     if (Object.keys(request).some(key => !supported.includes(key))) {
         invalidMcpRequest("Unsupported MCP attachment-metadata request field");
     }
@@ -92,6 +106,7 @@ function validate(body: unknown): Request {
         invalidMcpRequest("attachmentId lookup cannot be combined with search filters");
     }
     return {
+        ...validateMcpChatExclusions(request),
         attachmentId: attachmentId == null ? null : Number(attachmentId),
         startApple,
         endApple,
@@ -158,6 +173,7 @@ export class McpAttachmentMetadata {
             clauses.push("COALESCE(a.mime_type,'') LIKE ? ESCAPE '\\'");
             parameters.push(`${escapeLike(request.mimeType.replace(/\*$/u, ""))}%`);
         }
+        clauses.push(mcpExcludedAttachmentPredicate(request, "a", parameters));
         parameters.push(request.limit);
         const where = clauses.length === 0 ? "" : `WHERE ${clauses.join(" AND ")}`;
         const selected = database

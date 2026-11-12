@@ -12,6 +12,7 @@ import {
 } from "../src/server/api/interfaces/mcpEventEvidence";
 import { McpMessageHistory, MCP_HISTORY_RESPONSE_MAX_BYTES } from "../src/server/api/interfaces/mcpMessageHistory";
 import { McpContactActivity } from "../src/server/api/interfaces/mcpContactActivity";
+import { McpAttachmentTranscription } from "../src/server/api/interfaces/mcpAttachmentTranscription";
 import { McpAttachmentMetadata } from "../src/server/api/interfaces/mcpAttachmentMetadata";
 import {
     MCP_CHAT_SUCCESS_MESSAGE,
@@ -141,6 +142,7 @@ function execute(path: string, sql: string): void {
 describe("MCP database-backed behavior", () => {
     let databasePath: string;
     let database: CliDatabase;
+    let decodedIds: number[][];
 
     beforeEach(() => {
         const directory = mkdtempSync(join(tmpdir(), "bluebubbles-mcp-synthetic-"));
@@ -164,11 +166,13 @@ describe("MCP database-backed behavior", () => {
              CREATE TABLE message_attachment_join(message_id INTEGER,attachment_id INTEGER);`
         );
         database = new CliDatabase(databasePath);
+        decodedIds = [];
         const repository = {
             dbPath: databasePath,
             db: { driver: { databaseConnection: database } },
             getMessages: async (options: any) => {
                 const ids = (options.where[0].args.mcpHistoryIds ?? options.where[0].args.mcpActivityIds) as number[];
+                decodedIds.push(ids);
                 if (ids.length === 0) return [[], 0];
                 const marks = ids.map(() => "?").join(",");
                 const rows = database.query(
@@ -187,6 +191,107 @@ describe("MCP database-backed behavior", () => {
             }
         };
         setMcpTestServer({ iMessageRepo: repository });
+    });
+
+    function exclusionFixture() {
+        execute(
+            databasePath,
+            `
+            INSERT INTO handle(ROWID,id) VALUES(7,'person@example.invalid'),(8,'other@example.invalid');
+            INSERT INTO chat(ROWID,guid,chat_identifier,style) VALUES
+                (11,'any;-;person@example.invalid','person@example.invalid',45),
+                (12,'iMessage;+;shared-group','shared-group',43),(13,'iMessage;+;other-group','other-group',43);
+            INSERT INTO chat_handle_join(chat_id,handle_id) VALUES(11,7),(12,7),(12,8),(13,8);
+            INSERT INTO message(ROWID,guid,date,handle_id,is_from_me,text,associated_message_type) VALUES
+                (100,'excluded-incoming',800000000000000010,7,0,'private synthetic',0),
+                (101,'group-incoming',800000000000000009,7,0,'allowed synthetic',0),
+                (102,'excluded-outgoing',800000000000000009,0,1,'private synthetic',0),
+                (103,'group-reaction',800000000000000009,7,0,'allowed synthetic',2001),
+                (104,'excluded-reaction',800000000000000008,7,0,'private synthetic',2001),
+                (105,'group-outgoing',800000000000000007,0,1,'allowed synthetic',0),
+                (106,'other-group',800000000000000006,8,0,'allowed synthetic',0),
+                (107,'shared-message-row',800000000000000011,7,0,'private synthetic',0);
+            INSERT INTO chat_message_join(chat_id,message_id) VALUES
+                (11,100),(12,101),(11,102),(12,103),(11,104),(12,105),(13,106),(11,107),(12,107);
+            INSERT INTO attachment(ROWID,guid,filename,transfer_name,mime_type,total_bytes) VALUES
+                (21,'excluded-file','/nonexistent/private-synthetic.caf','private.caf','audio/x-caf',3),
+                (22,'group-file','/nonexistent/allowed-synthetic.caf','allowed.caf','audio/x-caf',3),
+                (23,'shared-file','/nonexistent/shared-synthetic.caf','shared.caf','audio/x-caf',3);
+            INSERT INTO message_attachment_join(message_id,attachment_id) VALUES(100,21),(101,22),(100,23),(101,23);
+        `
+        );
+    }
+
+    it.each([
+        { excludeChatGuids: ["any;-;person@example.invalid"] },
+        { excludeChatRowIds: [11] },
+        { excludeChatGuids: ["missing-guid"], excludeChatRowIds: [11] }
+    ])("excludes native chat identity before decoding with gap-free tied-date pages %#", async exclusions => {
+        exclusionFixture();
+        const seen: number[] = [];
+        let edge: Record<string, unknown> = {};
+        for (;;) {
+            const page = await McpMessageHistory.read({
+                limit: 2,
+                anchorApple: "800000000000000020",
+                ...exclusions,
+                ...edge
+            });
+            seen.push(...page.rows.map(row => row.originalROWID));
+            if (page.rows.length === 0) break;
+            const last = page.rows[page.rows.length - 1];
+            edge = { lastDateApple: last.dateApple, lastRow: last.originalROWID };
+        }
+        expect(seen).toEqual([103, 101, 105, 106]);
+        expect(decodedIds.flat()).toEqual(seen);
+        const empty = await McpMessageHistory.read({
+            limit: 101,
+            anchorApple: "800000000000000020",
+            chatGuid: "any;-;person@example.invalid",
+            ...exclusions
+        });
+        expect(empty.rows).toEqual([]);
+        expect(decodedIds.flat()).toEqual(seen);
+        const group = await McpMessageHistory.read({
+            limit: 101,
+            anchorApple: "800000000000000020",
+            chatGuid: "iMessage;+;shared-group",
+            searchTerm: "allowed",
+            threshold: 0,
+            ...exclusions
+        });
+        expect(group.rows.map(row => row.originalROWID)).toEqual([103, 101, 105]);
+        expect(group.rows.every(row => row.matches)).toBe(true);
+        const contact = await McpMessageHistory.read({
+            limit: 101,
+            anchorApple: "800000000000000020",
+            contactAddress: "person@example.invalid",
+            ...exclusions
+        });
+        expect(contact.rows.map(row => row.originalROWID)).toEqual([103, 101]);
+        expect(decodedIds.flat().some(id => [100, 102, 104, 107].includes(id))).toBe(false);
+    });
+
+    it("excludes attachment metadata, exact lookup, transcription and cross-chat activity at the source", async () => {
+        exclusionFixture();
+        const exclusions = { excludeChatRowIds: [11] };
+        expect(McpAttachmentMetadata.read(exclusions).rows.map(row => row.attachmentId)).toEqual([22]);
+        expect(McpAttachmentMetadata.read({ attachmentId: 21, ...exclusions }).rows).toEqual([]);
+        expect(McpAttachmentMetadata.read({ attachmentId: 23, ...exclusions }).rows).toEqual([]);
+        const runner = jest.fn();
+        const transcript = await McpAttachmentTranscription.read({ attachmentId: 21, ...exclusions }, runner);
+        expect(transcript.text).toContain("was not found");
+        expect(runner).not.toHaveBeenCalled();
+        const activity = await McpContactActivity.read({
+            addresses: ["person@example.invalid"],
+            limit: 20,
+            ...exclusions
+        });
+        expect(activity.rows.map(row => row.messageId)).toEqual([103, 101, 105]);
+        expect(activity.coverage.matchedChatCount).toBe(1);
+        expect(activity.rows.flatMap(row => (row.attachments as any).items).map(row => row.id)).toEqual([22]);
+        expect(activity.rows.every(row => row.chat.id === 12)).toBe(true);
+        expect(decodedIds.flat().some(id => [100, 102, 104, 107].includes(id))).toBe(false);
     });
 
     it("paginates every chat in SQLite NOCASE order without losing participant-less groups", () => {

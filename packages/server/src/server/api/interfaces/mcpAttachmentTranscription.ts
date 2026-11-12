@@ -17,6 +17,11 @@ import {
 import { homedir, tmpdir } from "os";
 import { extname, join, relative, sep } from "path";
 
+import {
+    MCP_CHAT_EXCLUSION_FIELDS,
+    validateMcpChatExclusions,
+    mcpExcludedAttachmentPredicate
+} from "./mcpChatExclusions";
 import { Server } from "@server";
 import { invalidMcpRequest } from "@server/api/interfaces/mcpErrors";
 
@@ -42,19 +47,19 @@ export type McpTranscriptionRunner = (
     options: { timeout: number; stdio: "ignore" }
 ) => Promise<RunResult>;
 
-function validate(body: unknown): number {
+function validate(body: unknown) {
     if (body == null || typeof body !== "object" || Array.isArray(body)) {
         invalidMcpRequest("Expected an MCP attachment-transcription request object");
     }
     const request = body as Record<string, unknown>;
-    if (Object.keys(request).some(key => key !== "attachmentId")) {
+    if (Object.keys(request).some(key => ![...MCP_CHAT_EXCLUSION_FIELDS, "attachmentId"].includes(key))) {
         invalidMcpRequest("Unsupported MCP attachment-transcription request field");
     }
     const id = request.attachmentId;
     if (typeof id !== "number" || !Number.isSafeInteger(id) || id < 1) {
         invalidMcpRequest("attachmentId must be a positive safe integer");
     }
-    return id;
+    return { attachmentId: id, ...validateMcpChatExclusions(request) };
 }
 
 function resolvedPath(value: string, rootValue: string): string {
@@ -172,13 +177,21 @@ export class McpAttachmentTranscription {
         runner: McpTranscriptionRunner = runMcpTranscriptionCommand,
         environment: NodeJS.ProcessEnv = process.env
     ): Promise<{ text: string }> {
-        const attachmentId = validate(body);
+        const request = validate(body);
+        const attachmentId = request.attachmentId;
         const database = (Server().iMessageRepo.db.driver as any).databaseConnection as SafeIntegerDatabase;
         if (!database?.prepare) throw new Error("Messages database connection is unavailable");
+        const parameters: unknown[] = [BigInt(attachmentId)];
+        const exclusion = mcpExcludedAttachmentPredicate(request, "a", parameters);
+        const guard =
+            request.excludeChatGuids.length + request.excludeChatRowIds.length === 0
+                ? ""
+                : `AND EXISTS (SELECT 1 FROM message_attachment_join j WHERE j.attachment_id=a.ROWID)
+             AND ${exclusion}`;
         const row = database
-            .prepare("SELECT filename,total_bytes,mime_type,uti FROM attachment WHERE ROWID=? LIMIT 1")
+            .prepare(`SELECT filename,total_bytes,mime_type,uti FROM attachment a WHERE a.ROWID=? ${guard} LIMIT 1`)
             .safeIntegers(true)
-            .get(BigInt(attachmentId));
+            .get(...parameters);
         if (row == null) return { text: `Transcription unavailable: attachment ${attachmentId} was not found.` };
         const mime = String(row.mime_type ?? "").toLocaleLowerCase();
         const uti = String(row.uti ?? "").toLocaleLowerCase();

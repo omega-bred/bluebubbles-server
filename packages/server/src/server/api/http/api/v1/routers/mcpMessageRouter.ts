@@ -1,3 +1,4 @@
+import { MCP_CHAT_EXCLUSION_CAPABILITIES } from "@server/api/interfaces/mcpChatExclusions";
 import type { Next } from "koa";
 import type { RouterContext } from "koa-router";
 
@@ -27,6 +28,13 @@ function safeFailure(error: unknown, operation: string): never {
 }
 
 export class McpMessageRouter {
+    static async capabilities(ctx: RouterContext, _: Next) {
+        return new Success(ctx, {
+            message: "Successfully fetched MCP read capabilities!",
+            data: MCP_CHAT_EXCLUSION_CAPABILITIES
+        }).send();
+    }
+
     static async attachmentTranscription(ctx: RouterContext, _: Next) {
         try {
             return new Success(ctx, {

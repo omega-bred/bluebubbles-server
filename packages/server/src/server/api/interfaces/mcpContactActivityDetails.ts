@@ -1,5 +1,13 @@
 import { PhoneNumberFormat, PhoneNumberUtil } from "google-libphonenumber";
 
+import {
+    McpChatExclusions,
+    MCP_CHAT_EXCLUSION_FIELDS,
+    validateMcpChatExclusions,
+    mcpExcludedMessagePredicate,
+    mcpExcludedMessageWhere,
+    mcpExcludedAttachmentPredicate
+} from "./mcpChatExclusions";
 import { Server } from "@server";
 import { invalidMcpRequest } from "@server/api/interfaces/mcpErrors";
 import { MCP_ACTIVITY_SUCCESS_MESSAGE, mcpSuccessResponseBytes } from "@server/api/interfaces/mcpResponseLimits";
@@ -55,12 +63,12 @@ function canonicalAddress(value: string, region: string): string | null {
     }
 }
 
-function validate(body: unknown): { addresses: string[]; limit: number } {
+function validate(body: unknown): McpChatExclusions & { addresses: string[]; limit: number } {
     if (body == null || typeof body !== "object" || Array.isArray(body)) {
         invalidMcpRequest("Expected an MCP contact-activity request object");
     }
     const request = body as Record<string, unknown>;
-    if (Object.keys(request).some(key => !["addresses", "limit"].includes(key))) {
+    if (Object.keys(request).some(key => ![...MCP_CHAT_EXCLUSION_FIELDS, "addresses", "limit"].includes(key))) {
         invalidMcpRequest("Unsupported MCP contact-activity request field");
     }
     if (!Array.isArray(request.addresses) || request.addresses.length < 1 || request.addresses.length > 32) {
@@ -86,7 +94,7 @@ function validate(body: unknown): { addresses: string[]; limit: number } {
     if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) {
         invalidMcpRequest("limit must be an integer from 1 through 20");
     }
-    return { addresses, limit };
+    return { ...validateMcpChatExclusions(request), addresses, limit };
 }
 
 function participants(database: SafeIntegerDatabase, chatIds: number[]) {
@@ -119,7 +127,7 @@ function participants(database: SafeIntegerDatabase, chatIds: number[]) {
     return result;
 }
 
-function attachments(database: SafeIntegerDatabase, messageIds: number[]) {
+function attachments(database: SafeIntegerDatabase, messageIds: number[], request: McpChatExclusions) {
     const attachmentColumns = columns(database, "attachment");
     const joinColumns = columns(database, "message_attachment_join");
     const result = new Map<number, unknown>();
@@ -131,6 +139,8 @@ function attachments(database: SafeIntegerDatabase, messageIds: number[]) {
     }
     if (messageIds.length === 0) return result;
     const marks = messageIds.map(() => "?").join(",");
+    const attachmentParameters: unknown[] = [...messageIds.map(BigInt)];
+    const exclusion = mcpExcludedAttachmentPredicate(request, "a", attachmentParameters);
     const selected = ATTACHMENT_FIELDS.map(name => `${optionalField(attachmentColumns, "a", name)} AS "${name}"`).join(
         ","
     );
@@ -140,11 +150,11 @@ function attachments(database: SafeIntegerDatabase, messageIds: number[]) {
                 SELECT j.message_id,a.ROWID AS attachment_id,${selected},
                        ROW_NUMBER() OVER (PARTITION BY j.message_id ORDER BY a.ROWID) AS rank
                 FROM message_attachment_join j JOIN attachment a ON a.ROWID=j.attachment_id
-                WHERE j.message_id IN (${marks})
+                WHERE j.message_id IN (${marks}) AND ${exclusion}
              ) SELECT * FROM ranked WHERE rank<=21 ORDER BY message_id,attachment_id`
         )
         .safeIntegers(true)
-        .all(...messageIds.map(BigInt));
+        .all(...attachmentParameters);
     const grouped = new Map<number, Record<string, unknown>[]>();
     for (const row of rows) {
         const messageId = exactNumber(row.message_id, "message ROWID");
@@ -203,10 +213,25 @@ export class McpContactActivity {
             });
         }
         const marks = handleIds.map(() => "?").join(",");
+        const chatParameters: unknown[] = [...handleIds.map(BigInt)];
+        const chatFilters: string[] = [];
+        if (request.excludeChatGuids.length > 0) {
+            chatFilters.push(
+                `(c.guid IS NULL OR c.guid NOT IN (${request.excludeChatGuids.map(() => "?").join(",")}))`
+            );
+            chatParameters.push(...request.excludeChatGuids);
+        }
+        if (request.excludeChatRowIds.length > 0) {
+            chatFilters.push(`c.ROWID NOT IN (${request.excludeChatRowIds.map(() => "?").join(",")})`);
+            chatParameters.push(...request.excludeChatRowIds.map(BigInt));
+        }
         const chats = database
-            .prepare(`SELECT DISTINCT chat_id FROM chat_handle_join WHERE handle_id IN (${marks})`)
+            .prepare(
+                `SELECT DISTINCT j.chat_id FROM chat_handle_join j JOIN chat c ON c.ROWID=j.chat_id
+                WHERE j.handle_id IN (${marks}) ${chatFilters.map(filter => `AND ${filter}`).join(" ")}`
+            )
             .safeIntegers(true)
-            .all(...handleIds.map(BigInt));
+            .all(...chatParameters);
         const chatIds = chats.map(row => exactNumber(row.chat_id, "chat ROWID"));
         if (chatIds.length === 0) {
             return McpContactActivity.bounded({
@@ -223,7 +248,8 @@ export class McpContactActivity {
         const messageColumns = columns(database, "message");
         const chatMarks = chatIds.map(() => "?").join(",");
         const dateApple = "(CASE WHEN ABS(m.date)<10000000000 THEN m.date*1000000000 ELSE m.date END)";
-        const filters = ["m.date>0"];
+        const selectionParameters: unknown[] = [...chatIds.map(BigInt)];
+        const filters = ["m.date>0", mcpExcludedMessagePredicate(request, "m", selectionParameters)];
         for (const name of ["item_type", "is_system_message", "date_retracted"]) {
             if (messageColumns.has(name)) filters.push(`COALESCE(m.${name},0)=0`);
         }
@@ -243,7 +269,7 @@ export class McpContactActivity {
                  ORDER BY ${dateApple} DESC,m.ROWID DESC,c.ROWID DESC LIMIT ?`
             )
             .safeIntegers(true)
-            .all(...chatIds.map(BigInt), request.limit + 1);
+            .all(...selectionParameters, request.limit + 1);
         const limited = selected.slice(0, request.limit);
         if (limited.length === 0) {
             return McpContactActivity.bounded({
@@ -265,7 +291,8 @@ export class McpContactActivity {
                 {
                     statement: "message.ROWID IN (:...mcpActivityIds)",
                     args: { mcpActivityIds: messageIds } as any
-                }
+                },
+                mcpExcludedMessageWhere(request)
             ]
         });
         const decodedById = new Map(decodedMessages.map(message => [message.ROWID, message]));
@@ -273,7 +300,7 @@ export class McpContactActivity {
             database,
             Array.from(new Set(limited.map(row => exactNumber(row.chat_row, "chat ROWID"))))
         );
-        const attachmentMap = attachments(database, messageIds);
+        const attachmentMap = attachments(database, messageIds, request);
         const rows = limited.map(row => {
             const messageId = exactNumber(row.message_row, "message ROWID");
             const chatId = exactNumber(row.chat_row, "chat ROWID");

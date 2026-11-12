@@ -4,6 +4,7 @@ The authenticated routes below are the reusable Messages backend for the standal
 
 | Route                                             | Backend responsibility                                                                                                | Bound                                                                                                  |
 | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `POST /api/v1/message/mcp/capabilities`           | Metadata-only exclusion support negotiation; does not access Messages                                                 | Small fixed response                                                                                   |
 | `POST /api/v1/message/mcp/history`                | Exact chat/contact history, keyset ordering, native Apple timestamps, and optional TheFuzz-compatible message scores  | 101 rows, 4 MiB serialized response, 8,000,000 fuzzy cell-work units                                   |
 | `POST /api/v1/message/mcp/chats`                  | Complete exact chat catalog, including chats without participant rows                                                 | 100 rows and 128 KiB per page                                                                          |
 | `POST /api/v1/message/mcp/event-evidence`         | Native event fields, source identity, associations, and high-water marks                                              | 1,250 rows and 4 MiB                                                                                   |
@@ -40,3 +41,35 @@ The MCP adapter retains protocol framing, untrusted-output wrapping, pagination 
 | `tool_fuzzy_search_messages`       | `/mcp/history` scoring and threshold decision                                                           | opaque cursor and presentation                                        |
 | `tool_search_attachments`          | `/mcp/attachments`                                                                                      | presentation                                                          |
 | `tool_get_attachment`              | `/mcp/attachments`, bounded local transcription, and converted GUID download for HEIC/HEIF/TIFF and CAF | path fallback, untrusted text metadata, and inline MCP media envelope |
+
+## Source-side chat exclusion contract (version 1)
+
+`POST /api/v1/message/mcp/capabilities` is authenticated with the same password middleware as the
+other MCP routes. Its body is `{}` and its data is:
+
+```json
+{ "chatExclusionVersion": 1, "chatExclusionOperations": ["history", "activity", "attachments", "transcribe"] }
+```
+
+Clients must negotiate support before issuing a filtered read. A failed or ambiguous preflight
+must not trigger a content request or unfiltered fallback. The previous server revision strictly
+rejects unknown request fields, but callers must not depend on that behavior in other backends.
+
+History, activity, attachment metadata (search and exact lookup), and transcription accept optional
+`excludeChatGuids: string[]` and `excludeChatRowIds: number[]`. Each array has at most 100 entries;
+GUIDs are exact, nonempty stored values of at most 2048 characters without surrounding whitespace;
+ROWIDs are positive safe integers. Null and malformed fields are rejected before database access.
+The identity lists form a union, are deduplicated, and never expand to participants or aliases.
+Groups with an excluded direct-chat participant remain eligible.
+
+Parameterized `NOT EXISTS` predicates exclude linked message IDs before native selection, keyset
+ordering, limits, body decoding, reaction metadata, or attachment metadata retrieval. History and
+activity repeat the predicate in the ORM body query. Message IDs linked to any excluded chat and
+attachment IDs linked to any excluded message remain excluded even if also linked elsewhere.
+Attachment lookup yields no rows and transcription yields not-found before filesystem access.
+Activity coverage counts only eligible matched chats. Unknown or missing native schema causes a
+read failure; no generic history/attachment fallback exists.
+
+The bridge binds canonical exclusion sets to the history cursor. Native descending date/ROWID
+ordering, the anchor, inclusive lower/exclusive upper bounds, and scanned-page fuzzy semantics are
+unchanged. This is a per-request contract, not a global policy or an event subscription migration.

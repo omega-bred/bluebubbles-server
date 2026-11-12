@@ -1,6 +1,12 @@
+import {
+    McpChatExclusions,
+    MCP_CHAT_EXCLUSION_FIELDS,
+    validateMcpChatExclusions,
+    mcpExcludedMessagePredicate
+} from "./mcpChatExclusions";
 import { invalidMcpRequest } from "./mcpErrors";
 
-export type McpMessageHistoryRequest = {
+export type McpMessageHistoryRequest = McpChatExclusions & {
     limit: number;
     anchorApple: bigint;
     lastDateApple: bigint | null;
@@ -44,6 +50,7 @@ export function validateMcpMessageHistoryRequest(body: unknown): McpMessageHisto
     }
     const request = body as Record<string, unknown>;
     const supported = new Set([
+        ...MCP_CHAT_EXCLUSION_FIELDS,
         "limit",
         "anchorApple",
         "lastDateApple",
@@ -98,6 +105,7 @@ export function validateMcpMessageHistoryRequest(body: unknown): McpMessageHisto
         invalidMcpRequest("threshold must be a finite number from 0 through 1");
     }
     return {
+        ...validateMcpChatExclusions(request),
         limit,
         anchorApple,
         lastDateApple,
@@ -151,6 +159,7 @@ export function mcpMessageHistorySelection(request: McpMessageHistoryRequest): {
             parameters.push(normalized);
         }
     }
+    clauses.push(mcpExcludedMessagePredicate(request, "m", parameters));
     parameters.push(request.limit);
     return {
         sql: `SELECT m.ROWID AS row_id,${dateNs} AS date_apple FROM message m WHERE ${clauses.join(

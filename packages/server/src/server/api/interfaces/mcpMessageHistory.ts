@@ -1,3 +1,4 @@
+import { mcpExcludedMessageWhere } from "./mcpChatExclusions";
 import { Server } from "@server";
 import {
     McpMessageHistoryRequest,
@@ -57,7 +58,8 @@ export class McpMessageHistory {
                 {
                     statement: "message.ROWID IN (:...mcpHistoryIds)",
                     args: { mcpHistoryIds: ids } as any
-                }
+                },
+                mcpExcludedMessageWhere(request)
             ]
         });
         const byId = new Map(messages.map(message => [message.ROWID, message]));

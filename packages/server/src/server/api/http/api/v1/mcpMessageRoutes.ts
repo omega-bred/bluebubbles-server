@@ -5,6 +5,11 @@ import { McpMessageRouter } from "./routers/mcpMessageRouter";
 export const MCP_MESSAGE_ROUTES: HttpRoute[] = [
     {
         method: HttpMethod.POST,
+        path: "mcp/capabilities",
+        controller: McpMessageRouter.capabilities
+    },
+    {
+        method: HttpMethod.POST,
         path: "mcp/event-evidence",
         controller: McpMessageRouter.eventEvidence
     },

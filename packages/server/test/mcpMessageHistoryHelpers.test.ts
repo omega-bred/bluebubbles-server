@@ -55,6 +55,17 @@ describe("MCP message history helpers", () => {
 
     it.each([
         {},
+        { limit: 1, anchorApple: "1", excludeChatGuids: null },
+        { limit: 1, anchorApple: "1", excludeChatGuids: "g" },
+        { limit: 1, anchorApple: "1", excludeChatGuids: [""] },
+        { limit: 1, anchorApple: "1", excludeChatGuids: [" g"] },
+        { limit: 1, anchorApple: "1", excludeChatGuids: ["x".repeat(2049)] },
+        { limit: 1, anchorApple: "1", excludeChatGuids: Array(101).fill("g") },
+        { limit: 1, anchorApple: "1", excludeChatRowIds: null },
+        { limit: 1, anchorApple: "1", excludeChatRowIds: [0] },
+        { limit: 1, anchorApple: "1", excludeChatRowIds: [1.5] },
+        { limit: 1, anchorApple: "1", excludeChatRowIds: ["1"] },
+        { limit: 1, anchorApple: "1", excludeChatRowIds: [Number.MAX_SAFE_INTEGER + 1] },
         { limit: 0, anchorApple: "1" },
         { limit: "1", anchorApple: "1" },
         { limit: 1, anchorApple: "01" },

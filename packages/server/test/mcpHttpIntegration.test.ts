@@ -162,6 +162,19 @@ describe("MCP HTTP authentication and middleware", () => {
     });
     afterEach(() => jest.restoreAllMocks());
 
+    it("negotiates exclusions through authenticated metadata without a Messages repository", async () => {
+        await withServer(async port => {
+            const unauthorized = await post(port, "mcp/capabilities", {});
+            expect(unauthorized.status).toBe(401);
+            const response = await post(port, "mcp/capabilities", {}, "synthetic-test-credential");
+            expect(response.status).toBe(200);
+            expect(response.body.data).toEqual({
+                chatExclusionVersion: 1,
+                chatExclusionOperations: ["history", "activity", "attachments", "transcribe"]
+            });
+        });
+    });
+
     it("uses the inherited protected middleware in production order without route overrides", () => {
         for (const route of MCP_MESSAGE_ROUTES) {
             expect(route.middleware).toBeUndefined();
